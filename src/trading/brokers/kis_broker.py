@@ -1,11 +1,13 @@
 """한국투자증권(KIS) Open API REST 어댑터 - 국내주식 전용.
 
-*** 중요 ***
-이 클래스는 이 개발 환경(네트워크/실계좌 접근 불가)에서 실거래 테스트를 거치지 않았다.
-실사용 전 반드시 다음을 직접 검증할 것:
-  1. 모의투자(virtual-trading) 도메인으로 먼저 연동 테스트 (openapivts.koreainvestment.com:29443)
-  2. TR_ID, 요청/응답 필드는 KIS 공식 API 문서(개발자센터)와 대조
-  3. 주문 수량/가격 단위(호가단위) 검증 로직 추가
+*** 검증 현황 (2026-07, 실사용자 모의투자 계좌로 확인) ***
+- 토큰 발급, hashkey 발급: 정상 동작 확인.
+- 잔고조회(TR VTTC8434R/TTTC8434R, /uapi/domestic-stock/v1/trading/inquire-balance):
+  정상 동작 확인. get_cash_balance()도 이 응답의 output2[0].dnca_tot_amt를 그대로 쓴다
+  (예전에 별도 TR "VTTC8908R"을 썼었는데, 그건 실제로는 "매수가능조회"용 TR이라
+  PDNO/ORD_UNPR을 요구해 에러가 났다 - 예수금은 잔고조회 응답에 이미 포함되어 있다).
+- place_order(주문)는 아직 실제 주문까지는 검증하지 못했다. 반드시 소액으로 먼저
+  테스트하고, 주문 수량/가격 단위(호가단위) 검증 로직도 필요할 수 있다.
 
 이 파일은 BrokerClient 인터페이스를 만족하는 "연결 지점"을 제공하는 것이 목적이며,
 전략/리스크/백테스트 로직은 이 클래스의 구현 여부와 무관하게 이미 완성되어 있다.
@@ -62,10 +64,10 @@ class KISBroker(BrokerClient):
             "CTX_AREA_NK100": "",
         }
 
-    # ---------- BrokerClient ----------
-    def get_cash_balance(self) -> float:
-        # TR_ID: 모의투자 VTTC8908R / 실전 TTTC8908R (예수금 조회) - 문서 대조 필요
-        tr_id = "VTTC8908R" if self.use_virtual else "TTTC8908R"
+    def _fetch_balance(self) -> dict:
+        """국내주식 잔고조회(TTTC8434R/VTTC8434R) - 예수금(output2)과 보유종목(output1)을
+        한 번의 호출로 함께 내려준다. 실사용자 계좌로 검증 완료(2026-07)."""
+        tr_id = "VTTC8434R" if self.use_virtual else "TTTC8434R"
         resp = self.session.request(
             "GET",
             f"{self.domain}/uapi/domestic-stock/v1/trading/inquire-balance",
@@ -74,6 +76,11 @@ class KISBroker(BrokerClient):
         )
         body = resp.json()
         self._raise_if_error(body)
+        return body
+
+    # ---------- BrokerClient ----------
+    def get_cash_balance(self) -> float:
+        body = self._fetch_balance()
         return float(body["output2"][0]["dnca_tot_amt"])
 
     def get_positions(self) -> dict[str, Position]:
@@ -86,15 +93,7 @@ class KISBroker(BrokerClient):
         트래커(RiskManager/BacktestEngine._entry_context)를 1차 소스로 쓰고,
         이 메서드는 장애 복구/검증용 보조 수단으로만 사용할 것을 권장한다.
         """
-        tr_id = "VTTC8434R" if self.use_virtual else "TTTC8434R"
-        resp = self.session.request(
-            "GET",
-            f"{self.domain}/uapi/domestic-stock/v1/trading/inquire-balance",
-            headers=self.session.headers(tr_id),
-            params=self._balance_params(),
-        )
-        body = resp.json()
-        self._raise_if_error(body)
+        body = self._fetch_balance()
 
         positions: dict[str, Position] = {}
         for row in body.get("output1", []):

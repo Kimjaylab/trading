@@ -43,7 +43,10 @@ params = {
     "CTX_AREA_NK100": "",
 }
 
-for tr_id in ["VTTC8908R", "VTTC8434R"]:
+# VTTC8434R(잔고조회)만 확인하면 된다 - 예수금(output2)과 보유종목(output1)을 함께 준다.
+# (VTTC8908R은 실사용자 계좌로 확인한 결과 "매수가능조회"용 TR로 밝혀져 이 목록에서 제외했다.
+#  PDNO/ORD_UNPR 없이 호출하면 "INPUT_FIELD_NAME PDNO" 에러가 난다.)
+for tr_id in ["VTTC8434R"]:
     print(f"\n{'=' * 20} TR_ID={tr_id} {'=' * 20}")
     resp = session.request(
         "GET",
