@@ -54,22 +54,32 @@ risk:
   reentry_cooldown_minutes: 30       # 동일 종목 손절 후 재진입 금지 시간
   max_entries_per_5min: 2            # 동일 시간대 과매수 방지 (5분당 신규 진입 최대 건수)
   max_open_positions: 5              # 최대 동시 보유 종목 수
-  min_reward_risk_ratio: 1.5         # 기대수익/손절폭 비율이 이보다 낮으면 진입 금지
+  min_reward_risk_ratio: 1.0         # 기대수익/손절폭 비율이 이보다 낮으면 진입 금지
+                                      # (돌파매매가 +3%/-3%로 정확히 1.0이라 이보다 높이면 돌파 진입이 전부 막힘)
   max_position_weight_pct: 20.0      # 종목당 최대 비중 (계좌 대비)
 
 strategies:
   breakout:
-    target_profit_pct: [2.0, 3.0]
-    hard_stop_pct: 1.2
+    partial_take_profit_pct: 2.0   # 이 수익률에서 절반 익절
+    full_take_profit_pct: 3.0      # 이 수익률에서 잔량 전량 익절
+    hard_stop_pct: 3.0
+    partial_exit_fraction: 0.5      # 부분 익절 시 매도할 비중 (나머지는 전량 익절/손절까지 보유)
     max_hold_minutes: 15
     score_entry_threshold: 0.62
     execution_strength_exit_threshold: 90   # 체결강도 이 값 아래로 급락 시 즉시 청산
   pullback:
-    target_profit_pct: [5.0, 10.0]
+    partial_take_profit_pct: 5.0
+    full_take_profit_pct: 8.0
+    hard_stop_pct: 4.0
+    partial_exit_fraction: 0.5
     max_hold_minutes: 60
     score_entry_threshold: 0.58
     pullback_volume_decay_max: 0.6   # 눌림 구간 거래량이 직전 상승구간의 60% 이하여야 '건강한 눌림'
   trend_pullback:
+    partial_take_profit_pct: 7.0
+    full_take_profit_pct: 10.0
+    hard_stop_pct: 4.0
+    partial_exit_fraction: 0.5
     score_entry_threshold: 0.55
     force_exit_before_close_minutes: 10
     min_days_uptrend: 1

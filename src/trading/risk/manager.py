@@ -102,5 +102,10 @@ class RiskManager:
         else:
             self.state.consecutive_losses = 0
 
+    def register_partial_exit(self, realized_pnl: float) -> None:
+        """부분 익절 - 포지션이 완전히 청산된 게 아니므로 보유종목 수/연속손실 카운트는
+        건드리지 않고, 실현손익만 당일 손익에 반영한다."""
+        self.state.realized_pnl_today += realized_pnl
+
     def reset_day(self, start_equity: float) -> None:
         self.state = RiskState(start_equity=start_equity, current_equity=start_equity)

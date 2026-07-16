@@ -24,6 +24,7 @@ class EntryDecision:
 class ExitDecision:
     should_exit: bool
     reason: str = ""
+    exit_fraction: float = 1.0  # 0~1. 1.0=전량 청산, 그 미만이면 부분 청산(나머지는 계속 보유)
 
 
 class Strategy(ABC):
@@ -46,5 +47,6 @@ class Strategy(ABC):
         features: FeatureVector,
         position: Position,
         minutes_held: float,
+        partial_exit_done: bool = False,
     ) -> ExitDecision:
         ...

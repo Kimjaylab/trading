@@ -142,24 +142,52 @@ class BacktestEngine:
             feat = features.get(symbol) or self.feature_extractor.extract_single(snap)
             minutes_held = (ts - position.opened_at).total_seconds() / 60
 
+            ctx = self._entry_context.get(symbol, {})
+            # 실거래 브로커(KISBroker 등)는 get_positions()가 매번 새 응답으로 Position을
+            # 만들어 stop/target을 모른다(항상 0.0) - 내부 트래커(ctx)의 값으로 덮어써야
+            # 손절/익절이 실거래에서도 실제로 동작한다. PaperBroker는 이미 올바른 값이 있어
+            # 덮어써도 결과가 같다.
+            if "stop_price" in ctx:
+                position.stop_price = ctx["stop_price"]
+            if "target_price" in ctx:
+                position.target_price = ctx["target_price"]
+            partial_exit_done = ctx.get("partial_exit_done", False)
+
             strategy = self.phase_selector.get(position.strategy)
-            decision = strategy.evaluate_exit(snap, feat, position, minutes_held)
+            decision = strategy.evaluate_exit(snap, feat, position, minutes_held, partial_exit_done)
 
             elapsed = minutes_since_open(ts, self.config.market_open)
             if not decision.should_exit and elapsed >= self._hard_close_elapsed:
                 decision.should_exit = True
                 decision.reason = "hard_close_liquidation"
+                decision.exit_fraction = 1.0
 
             if decision.should_exit:
-                self._execute_exit(ts, symbol, position, decision.reason, result)
+                self._execute_exit(ts, symbol, position, decision.reason, result, decision.exit_fraction)
 
-    def _execute_exit(self, ts, symbol, position: Position, reason: str, result: BacktestResult) -> None:
-        order = self.broker.place_order(symbol, OrderSide.SELL, position.quantity, 0.0, ts, strategy=position.strategy)
+    def _execute_exit(
+        self, ts, symbol, position: Position, reason: str, result: BacktestResult, exit_fraction: float = 1.0
+    ) -> None:
+        original_qty = position.quantity
+        if exit_fraction >= 1.0 or original_qty <= 1:
+            sell_qty = original_qty
+        else:
+            sell_qty = min(max(1, round(original_qty * exit_fraction)), original_qty - 1)
+        is_full_close = sell_qty >= original_qty
+
+        order = self.broker.place_order(symbol, OrderSide.SELL, sell_qty, 0.0, ts, strategy=position.strategy)
         if order.status != OrderStatus.FILLED:
             return
-        self.risk_manager.register_exit(symbol, ts, order.realized_pnl)
 
-        ctx = self._entry_context.pop(symbol, None)
+        if is_full_close:
+            self.risk_manager.register_exit(symbol, ts, order.realized_pnl)
+            ctx = self._entry_context.pop(symbol, None)
+        else:
+            self.risk_manager.register_partial_exit(order.realized_pnl)
+            ctx = self._entry_context.get(symbol)
+            if ctx is not None:
+                ctx["partial_exit_done"] = True
+
         if ctx is not None:
             pnl_pct = (order.price / ctx["entry_price"] - 1) * 100
             result.trades.append(
@@ -170,7 +198,7 @@ class BacktestEngine:
                     exit_ts=ts,
                     entry_price=ctx["entry_price"],
                     exit_price=order.price,
-                    quantity=position.quantity,
+                    quantity=sell_qty,
                     pnl_krw=order.realized_pnl,
                     pnl_pct=pnl_pct,
                     exit_reason=reason,
@@ -223,6 +251,9 @@ class BacktestEngine:
                     "phase": phase,
                     "score": score_result.score,
                     "features": feat.as_dict(),
+                    "stop_price": entry_decision.stop_price,
+                    "target_price": entry_decision.target_price,
+                    "partial_exit_done": False,
                 }
 
     def _liquidate_all(self, ts: datetime, result: BacktestResult) -> None:

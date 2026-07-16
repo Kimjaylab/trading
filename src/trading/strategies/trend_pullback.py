@@ -4,12 +4,9 @@
 """
 from __future__ import annotations
 
-from datetime import datetime
-
 from trading.brokers.interfaces import Position
 from trading.config import Config, get_config
 from trading.data.interfaces import MarketSnapshot
-from trading.indicators import technical as ta
 from trading.market_regime.classifier import RegimeResult
 from trading.scoring.engine import ScoreResult
 from trading.scoring.features import FeatureVector
@@ -55,10 +52,8 @@ class TrendPullbackStrategy(Strategy):
                 return EntryDecision(False, reason="no_bullish_candle_after_pullback", score=score_result.score)
 
         entry_price = snapshot.last_close
-        daily = snapshot.daily_bars
-        baseline = ta.ichimoku_baseline(daily["high"], daily["low"], 26).iloc[-1] if len(daily) > 0 else entry_price * 0.95
-        stop_price = min(baseline, entry_price * (1 - 3.0 / 100))
-        target_price = entry_price * (1 + 6.0 / 100)
+        stop_price = entry_price * (1 - self.cfg["hard_stop_pct"] / 100)
+        target_price = entry_price * (1 + self.cfg["full_take_profit_pct"] / 100)
         return EntryDecision(True, stop_price=stop_price, target_price=target_price, reason="trend_intact_pullback_bounce", score=score_result.score)
 
     def evaluate_exit(
@@ -67,11 +62,13 @@ class TrendPullbackStrategy(Strategy):
         features: FeatureVector,
         position: Position,
         minutes_held: float,
+        partial_exit_done: bool = False,
     ) -> ExitDecision:
         price = snapshot.last_close
+        profit_pct = (price / position.avg_price - 1) * 100
 
         if price <= position.stop_price:
-            return ExitDecision(True, reason="baseline_broken")
+            return ExitDecision(True, reason="hard_stop_hit")
 
         if features.daily_position < -0.1 or features.minute_trend < -0.4:
             return ExitDecision(True, reason="trend_damaged")
@@ -79,5 +76,11 @@ class TrendPullbackStrategy(Strategy):
         minutes_to_close = minutes_until(snapshot.timestamp, self.config.hard_close_time)
         if minutes_to_close <= self.cfg["force_exit_before_close_minutes"]:
             return ExitDecision(True, reason="force_exit_before_close")
+
+        if profit_pct >= self.cfg["full_take_profit_pct"]:
+            return ExitDecision(True, reason="full_take_profit")
+
+        if profit_pct >= self.cfg["partial_take_profit_pct"] and not partial_exit_done:
+            return ExitDecision(True, reason="partial_take_profit", exit_fraction=self.cfg["partial_exit_fraction"])
 
         return ExitDecision(False)

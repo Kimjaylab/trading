@@ -37,8 +37,8 @@ def test_reentry_cooldown_blocks_same_symbol():
 def test_reward_risk_ratio_filter():
     rm = RiskManager(start_equity=10_000_000, config=get_config())
     ts = datetime(2026, 7, 16, 9, 5)
-    # 진입가 10000, 손절 9900(risk=100), 목표 10120(reward=120) -> ratio 1.2 < min 1.5
-    ok, reason = rm.can_enter("A000001", ts, 10000, 9900, 10120)
+    # 진입가 10000, 손절 9900(risk=100), 목표 10080(reward=80) -> ratio 0.8 < min 1.0
+    ok, reason = rm.can_enter("A000001", ts, 10000, 9900, 10080)
     assert not ok
     assert "손익비" in reason
 

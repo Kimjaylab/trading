@@ -7,7 +7,6 @@ from __future__ import annotations
 from trading.brokers.interfaces import Position
 from trading.config import Config, get_config
 from trading.data.interfaces import MarketSnapshot
-from trading.indicators import technical as ta
 from trading.market_regime.classifier import RegimeResult
 from trading.scoring.engine import ScoreResult
 from trading.scoring.features import FeatureVector
@@ -42,7 +41,7 @@ class BreakoutStrategy(Strategy):
 
         entry_price = snapshot.last_close
         stop_price = entry_price * (1 - self.cfg["hard_stop_pct"] / 100)
-        target_price = entry_price * (1 + self.cfg["target_profit_pct"][1] / 100)
+        target_price = entry_price * (1 + self.cfg["full_take_profit_pct"] / 100)
         return EntryDecision(True, stop_price=stop_price, target_price=target_price, reason="breakout_confirmed", score=score_result.score)
 
     def evaluate_exit(
@@ -51,6 +50,7 @@ class BreakoutStrategy(Strategy):
         features: FeatureVector,
         position: Position,
         minutes_held: float,
+        partial_exit_done: bool = False,
     ) -> ExitDecision:
         price = snapshot.last_close
         profit_pct = (price / position.avg_price - 1) * 100
@@ -65,14 +65,17 @@ class BreakoutStrategy(Strategy):
             if price < recent_high * 0.995:
                 return ExitDecision(True, reason="breakout_failed")
 
-        if profit_pct >= self.cfg["target_profit_pct"][1]:
-            return ExitDecision(True, reason="target_reached")
-
-        if profit_pct >= self.cfg["target_profit_pct"][0] and snapshot.execution_strength < self.cfg["execution_strength_exit_threshold"]:
-            return ExitDecision(True, reason="momentum_weakening_at_profit")
-
         if snapshot.execution_strength < self.cfg["execution_strength_exit_threshold"] - 15:
             return ExitDecision(True, reason="execution_strength_collapsed")
+
+        if profit_pct >= self.cfg["full_take_profit_pct"]:
+            return ExitDecision(True, reason="full_take_profit")
+
+        if profit_pct >= self.cfg["partial_take_profit_pct"]:
+            if not partial_exit_done:
+                return ExitDecision(True, reason="partial_take_profit", exit_fraction=self.cfg["partial_exit_fraction"])
+            if snapshot.execution_strength < self.cfg["execution_strength_exit_threshold"]:
+                return ExitDecision(True, reason="momentum_weakening_after_partial")
 
         if minutes_held >= self.cfg["max_hold_minutes"]:
             return ExitDecision(True, reason="max_hold_time")
