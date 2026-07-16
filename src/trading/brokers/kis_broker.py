@@ -1,4 +1,4 @@
-"""한국투자증권(KIS) Open API REST 어댑터 스켈레톤.
+"""한국투자증권(KIS) Open API REST 어댑터 - 국내주식 전용.
 
 *** 중요 ***
 이 클래스는 이 개발 환경(네트워크/실계좌 접근 불가)에서 실거래 테스트를 거치지 않았다.
@@ -10,71 +10,36 @@
 
 이 파일은 BrokerClient 인터페이스를 만족하는 "연결 지점"을 제공하는 것이 목적이며,
 전략/리스크/백테스트 로직은 이 클래스의 구현 여부와 무관하게 이미 완성되어 있다.
-
-*** 국내(KRX) 전용이다 - 미국주식 연동은 별도 구현 필요 ***
-아래 place_order()는 국내주식 현금주문 엔드포인트(/uapi/domestic-stock/v1/trading/order-cash,
-TR_ID TTTC0802U 등)만 구현했다. 미국주식은 엔드포인트(/uapi/overseas-stock/v1/trading/order)와
-TR_ID 체계가 완전히 다르고(매수/매도/시장 구분별 코드 상이), 주문통화·호가단위·정규장 시간
-처리도 별도로 필요하다. 정확한 TR_ID는 이 환경에서 검증하지 못했으므로 KIS 공식 문서를
-직접 확인해 별도 클래스(예: KISOverseasBroker)로 구현할 것을 권장한다.
+미국주식은 brokers/kis_overseas_broker.py를 사용할 것 (엔드포인트/TR_ID 완전히 다름).
 """
 from __future__ import annotations
 
-import time
 from datetime import datetime
 
 import requests
 
 from trading.brokers.interfaces import BrokerClient, OrderResult, OrderSide, OrderStatus, Position
+from trading.brokers.kis_session import KISSession
 
 
 class KISBroker(BrokerClient):
-    REAL_DOMAIN = "https://openapi.koreainvestment.com:9443"
-    VIRTUAL_DOMAIN = "https://openapivts.koreainvestment.com:29443"
-
     def __init__(
         self,
-        app_key: str,
-        app_secret: str,
+        session: KISSession,
         account_no: str,
         account_product_code: str = "01",
-        use_virtual: bool = True,
-        session: requests.Session | None = None,
     ):
-        self.app_key = app_key
-        self.app_secret = app_secret
+        self.session = session
         self.account_no = account_no
         self.account_product_code = account_product_code
-        self.domain = self.VIRTUAL_DOMAIN if use_virtual else self.REAL_DOMAIN
-        self.use_virtual = use_virtual
-        self.session = session or requests.Session()
-        self._access_token: str | None = None
-        self._token_expires_at: float = 0.0
 
-    # ---------- auth ----------
-    def _ensure_token(self) -> str:
-        if self._access_token and time.time() < self._token_expires_at - 60:
-            return self._access_token
-        resp = self.session.post(
-            f"{self.domain}/oauth2/tokenP",
-            json={"grant_type": "client_credentials", "appkey": self.app_key, "appsecret": self.app_secret},
-            timeout=10,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        self._access_token = data["access_token"]
-        self._token_expires_at = time.time() + int(data.get("expires_in", 86400))
-        return self._access_token
+    @property
+    def use_virtual(self) -> bool:
+        return self.session.use_virtual
 
-    def _headers(self, tr_id: str) -> dict:
-        return {
-            "content-type": "application/json; charset=utf-8",
-            "authorization": f"Bearer {self._ensure_token()}",
-            "appkey": self.app_key,
-            "appsecret": self.app_secret,
-            "tr_id": tr_id,
-            "custtype": "P",
-        }
+    @property
+    def domain(self) -> str:
+        return self.session.domain
 
     # ---------- BrokerClient ----------
     def get_cash_balance(self) -> float:
@@ -93,9 +58,9 @@ class KISBroker(BrokerClient):
             "CTX_AREA_FK100": "",
             "CTX_AREA_NK100": "",
         }
-        resp = self.session.get(
+        resp = self.session.http.get(
             f"{self.domain}/uapi/domestic-stock/v1/trading/inquire-balance",
-            headers=self._headers(tr_id),
+            headers=self.session.headers(tr_id),
             params=params,
             timeout=10,
         )
@@ -104,10 +69,54 @@ class KISBroker(BrokerClient):
         return float(body["output2"][0]["dnca_tot_amt"])
 
     def get_positions(self) -> dict[str, Position]:
-        raise NotImplementedError(
-            "잔고 응답(output1) 파싱은 계좌 실데이터로 검증 후 구현할 것. "
-            "그 전까지는 PaperBroker 또는 내부 포지션 트래커를 신뢰 소스로 사용."
+        """계좌 잔고(output1)를 Position으로 변환한다.
+
+        *** 주의 ***: KIS 잔고조회 응답에는 진입시각/전략명/손절가/목표가가 없다.
+        이 필드들은 원래 이 시스템의 RiskManager/전략이 진입 시점에 부여하는 값이라,
+        브로커 재시작 등으로 내부 상태(트래킹)를 잃은 뒤 이 메서드로 복구하면
+        stop/target이 비어있는 상태(0.0)로 채워진다 - 실거래 루프는 내부 포지션
+        트래커(RiskManager/BacktestEngine._entry_context)를 1차 소스로 쓰고,
+        이 메서드는 장애 복구/검증용 보조 수단으로만 사용할 것을 권장한다.
+        """
+        tr_id = "VTTC8434R" if self.use_virtual else "TTTC8434R"
+        params = {
+            "CANO": self.account_no,
+            "ACNT_PRDT_CD": self.account_product_code,
+            "AFHR_FLPR_YN": "N",
+            "OFL_YN": "",
+            "INQR_DVSN": "02",
+            "UNPR_DVSN": "01",
+            "FUND_STTL_ICLD_YN": "N",
+            "FNCG_AMT_AUTO_RDPT_YN": "N",
+            "PRCS_DVSN": "01",
+            "CTX_AREA_FK100": "",
+            "CTX_AREA_NK100": "",
+        }
+        resp = self.session.http.get(
+            f"{self.domain}/uapi/domestic-stock/v1/trading/inquire-balance",
+            headers=self.session.headers(tr_id),
+            params=params,
+            timeout=10,
         )
+        resp.raise_for_status()
+        body = resp.json()
+
+        positions: dict[str, Position] = {}
+        for row in body.get("output1", []):
+            qty = int(row.get("hldg_qty", 0))
+            if qty <= 0:
+                continue
+            symbol = row["pdno"]
+            positions[symbol] = Position(
+                symbol=symbol,
+                quantity=qty,
+                avg_price=float(row.get("pchs_avg_pric", 0.0)),
+                opened_at=datetime.now(),
+                strategy="recovered_from_broker",
+                stop_price=0.0,
+                target_price=0.0,
+            )
+        return positions
 
     def place_order(
         self,
@@ -135,9 +144,9 @@ class KISBroker(BrokerClient):
             "ORD_UNPR": "0",
         }
         try:
-            resp = self.session.post(
+            resp = self.session.http.post(
                 f"{self.domain}/uapi/domestic-stock/v1/trading/order-cash",
-                headers=self._headers(tr_id),
+                headers=self.session.headers(tr_id),
                 json=body,
                 timeout=10,
             )

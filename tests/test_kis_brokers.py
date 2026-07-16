@@ -1,0 +1,138 @@
+"""KIS 브로커 어댑터의 요청 구성/응답 파싱 로직을 네트워크 없이 검증한다.
+
+실제 KIS 서버 응답 스펙과 100% 동일하다는 보장은 없지만(이 환경은 네트워크 접근이
+없어 실제 호출로 검증 불가), 최소한 이 코드가 "의도한 대로" 요청을 만들고
+응답을 파싱하는지는 가짜(fake) HTTP 세션으로 확인할 수 있다.
+"""
+from __future__ import annotations
+
+from datetime import datetime
+
+from trading.brokers.interfaces import OrderSide, OrderStatus
+from trading.brokers.kis_broker import KISBroker
+from trading.brokers.kis_overseas_broker import KISOverseasBroker
+from trading.brokers.kis_session import KISSession
+
+
+class FakeResponse:
+    def __init__(self, json_body: dict, status_code: int = 200):
+        self._json = json_body
+        self.status_code = status_code
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+    def json(self):
+        return self._json
+
+
+class FakeHTTP:
+    """requests.Session을 대체하는 가짜 세션. 호출 기록을 남겨 검증에 사용한다."""
+
+    def __init__(self):
+        self.calls: list[dict] = []
+        self.token_call_count = 0
+        self.next_responses: dict[str, FakeResponse] = {}
+
+    def post(self, url, json=None, headers=None, timeout=None, **kwargs):
+        self.calls.append({"method": "POST", "url": url, "json": json, "headers": headers})
+        if "/oauth2/tokenP" in url:
+            self.token_call_count += 1
+            return FakeResponse({"access_token": "fake-token", "expires_in": 86400})
+        return self.next_responses.get(url, FakeResponse({"rt_cd": "0", "output": {"ODNO": "0000001"}}))
+
+    def get(self, url, params=None, headers=None, timeout=None, **kwargs):
+        self.calls.append({"method": "GET", "url": url, "params": params, "headers": headers})
+        return self.next_responses.get(url, FakeResponse({}))
+
+
+def _session(use_virtual=True) -> tuple[KISSession, FakeHTTP]:
+    fake = FakeHTTP()
+    return KISSession("appkey", "appsecret", use_virtual=use_virtual, http=fake), fake
+
+
+def test_token_is_cached_across_multiple_calls():
+    session, fake = _session()
+    session.ensure_token()
+    session.ensure_token()
+    session.ensure_token()
+    assert fake.token_call_count == 1
+
+
+def test_domestic_place_order_uses_virtual_tr_id_and_market_order():
+    session, fake = _session(use_virtual=True)
+    broker = KISBroker(session, account_no="12345678", account_product_code="01")
+
+    result = broker.place_order("005930", OrderSide.BUY, 10, 70000, datetime.now())
+
+    assert result.status == OrderStatus.PENDING
+    order_call = next(c for c in fake.calls if "order-cash" in c["url"])
+    assert order_call["headers"]["tr_id"] == "VTTC0802U"
+    assert order_call["json"]["PDNO"] == "005930"
+    assert order_call["json"]["ORD_QTY"] == "10"
+
+
+def test_domestic_place_order_uses_real_tr_id_for_sell():
+    session, fake = _session(use_virtual=False)
+    broker = KISBroker(session, account_no="12345678")
+
+    broker.place_order("005930", OrderSide.SELL, 5, 70000, datetime.now())
+
+    order_call = next(c for c in fake.calls if "order-cash" in c["url"])
+    assert order_call["headers"]["tr_id"] == "TTTC0801U"
+
+
+def test_domestic_place_order_rejected_when_rt_cd_not_zero():
+    session, fake = _session()
+    url = f"{session.domain}/uapi/domestic-stock/v1/trading/order-cash"
+    fake.next_responses[url] = FakeResponse({"rt_cd": "1", "msg1": "잔고부족", "output": {}})
+    broker = KISBroker(session, account_no="12345678")
+
+    result = broker.place_order("005930", OrderSide.BUY, 10, 70000, datetime.now())
+
+    assert result.status == OrderStatus.REJECTED
+    assert result.reason == "잔고부족"
+
+
+def test_domestic_get_positions_parses_and_filters_zero_qty():
+    session, fake = _session()
+    url = f"{session.domain}/uapi/domestic-stock/v1/trading/inquire-balance"
+    fake.next_responses[url] = FakeResponse(
+        {
+            "output1": [
+                {"pdno": "005930", "hldg_qty": "10", "pchs_avg_pric": "70000"},
+                {"pdno": "000660", "hldg_qty": "0", "pchs_avg_pric": "150000"},
+            ],
+            "output2": [{"dnca_tot_amt": "5000000"}],
+        }
+    )
+    broker = KISBroker(session, account_no="12345678")
+
+    positions = broker.get_positions()
+
+    assert set(positions.keys()) == {"005930"}
+    assert positions["005930"].quantity == 10
+    assert positions["005930"].avg_price == 70000.0
+
+
+def test_overseas_place_order_requires_limit_price():
+    session, _ = _session()
+    broker = KISOverseasBroker(session, account_no="12345678")
+
+    result = broker.place_order("AAPL", OrderSide.BUY, 5, 0.0, datetime.now())
+
+    assert result.status == OrderStatus.REJECTED
+    assert result.reason == "overseas_orders_require_limit_price"
+
+
+def test_overseas_place_order_uses_exchange_map():
+    session, fake = _session()
+    broker = KISOverseasBroker(session, account_no="12345678", exchange_map={"AAPL": "NASD", "IBM": "NYSE"})
+
+    broker.place_order("IBM", OrderSide.BUY, 5, 150.0, datetime.now())
+
+    order_call = next(c for c in fake.calls if "/overseas-stock/v1/trading/order" in c["url"])
+    assert order_call["json"]["OVRS_EXCG_CD"] == "NYSE"
+    assert order_call["json"]["OVRS_ORD_UNPR"] == "150.0"
+    assert order_call["headers"]["tr_id"] == "VTTT1002U"
