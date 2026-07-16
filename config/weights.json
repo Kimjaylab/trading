@@ -1,0 +1,52 @@
+{
+  "_meta": {
+    "version": 1,
+    "description": "스코어링 엔진 가중치. 'default'는 공통 가중치, 각 전략명 키는 default 위에 덮어씌워지는 보정치. optimize_weights.py가 백테스트 트레이드 로그를 학습해 이 파일을 갱신한다.",
+    "feature_range": "[-1, 1], +1이 진입에 유리, -1이 불리",
+    "updated_by": "manual_initial",
+    "updated_at": null
+  },
+  "bias": -0.1,
+  "default": {
+    "volume_surge": 0.85,
+    "trading_value_rank": 0.55,
+    "execution_strength": 0.95,
+    "orderbook_imbalance": 0.65,
+    "program_net_buy": 0.45,
+    "foreign_inst_net_buy": 0.40,
+    "candle_strength": 0.70,
+    "minute_trend": 0.75,
+    "daily_position": 0.50,
+    "prior_high_breakout": 0.80,
+    "vi_triggered": -0.20,
+    "sector_strength": 0.45,
+    "theme_strength": 0.35,
+    "index_direction": 0.40,
+    "volatility": -0.30,
+    "avg_trading_value": 0.30,
+    "spread": -0.55,
+    "liquidity": 0.35
+  },
+  "breakout": {
+    "prior_high_breakout": 1.10,
+    "execution_strength": 1.15,
+    "volume_surge": 1.05,
+    "vi_triggered": -0.35,
+    "daily_position": 0.20
+  },
+  "pullback": {
+    "minute_trend": 0.55,
+    "candle_strength": 0.85,
+    "volume_surge": 0.35,
+    "daily_position": 0.60,
+    "prior_high_breakout": 0.30
+  },
+  "trend_pullback": {
+    "daily_position": 0.95,
+    "minute_trend": 0.90,
+    "sector_strength": 0.60,
+    "theme_strength": 0.50,
+    "volume_surge": 0.40,
+    "candle_strength": 0.65
+  }
+}

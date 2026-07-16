@@ -1,0 +1,216 @@
+"""이벤트 기반(분봉 단위) 백테스트 엔진.
+
+실거래 루프(trading.execution.live_runner)와 최대한 동일한 순서로 동작하도록 설계했다:
+제외필터 -> 스코어링 -> 전략별 진입판단 -> 리스크매니저 승인 -> 체결 -> (다음 루프에서) 청산판단.
+이렇게 하면 백테스트에서 검증한 로직을 실거래로 옮길 때 동작이 달라질 위험이 줄어든다.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime
+
+from trading.brokers.interfaces import OrderSide, OrderStatus, Position
+from trading.brokers.paper_broker import PaperBroker
+from trading.config import Config, get_config
+from trading.data.interfaces import MarketDataProvider
+from trading.filters.exclusion import is_excluded
+from trading.market_regime.classifier import MarketRegimeClassifier, RegimeResult
+from trading.risk.manager import RiskManager
+from trading.scoring.engine import ScoringEngine
+from trading.scoring.features import FeatureExtractor, FeatureVector
+from trading.strategies.selector import PhaseSelector
+from trading.utils.time_utils import minutes_between, minutes_since_open
+
+import pandas as pd
+
+
+@dataclass
+class TradeRecord:
+    symbol: str
+    phase: str
+    entry_ts: datetime
+    exit_ts: datetime
+    entry_price: float
+    exit_price: float
+    quantity: int
+    pnl_krw: float
+    pnl_pct: float
+    exit_reason: str
+    entry_score: float
+    features_at_entry: dict[str, float]
+
+    @property
+    def win(self) -> bool:
+        return self.pnl_krw > 0
+
+
+@dataclass
+class BacktestResult:
+    trades: list[TradeRecord] = field(default_factory=list)
+    equity_curve: list[tuple[datetime, float]] = field(default_factory=list)
+    final_equity: float = 0.0
+    start_equity: float = 0.0
+    rejected_by_risk: list[tuple[datetime, str, str]] = field(default_factory=list)
+    excluded_counts: dict[str, int] = field(default_factory=dict)
+
+
+class BacktestEngine:
+    def __init__(
+        self,
+        data_provider: MarketDataProvider,
+        initial_cash: float = 50_000_000,
+        config: Config | None = None,
+        index_close: pd.Series | None = None,
+        broker=None,
+    ):
+        self.data_provider = data_provider
+        self.config = config or get_config()
+        self.broker = broker or PaperBroker(data_provider, initial_cash)
+        self.risk_manager = RiskManager(initial_cash, self.config)
+        self.feature_extractor = FeatureExtractor(self.config)
+        self.scoring_engine = ScoringEngine(self.config)
+        self.regime_classifier = MarketRegimeClassifier(self.config)
+        self.phase_selector = PhaseSelector(self.config)
+        self.index_close = index_close
+
+        # 자정을 넘기는 세션(미국장)도 올바르게 처리하기 위해 개장 시각 기준 경과분(elapsed
+        # minutes)으로 비교한다 - 단순 ts.time() 비교는 자정 넘김 세션에서 깨진다.
+        self._force_liquidation_elapsed = minutes_between(self.config.market_open, self.config.force_liquidation_time)
+        self._hard_close_elapsed = minutes_between(self.config.market_open, self.config.hard_close_time)
+
+        self._entry_context: dict[str, dict] = {}
+
+    def _current_regime(self, timestamp: datetime) -> RegimeResult:
+        if self.index_close is None:
+            from trading.market_regime.classifier import Regime
+
+            return RegimeResult(Regime.SIDEWAYS, 0, 0, 0, self.config.regime["threshold_adjust"]["sideways"])
+        series = self.index_close.loc[:timestamp]
+        return self.regime_classifier.classify(series)
+
+    def run(self) -> BacktestResult:
+        result = BacktestResult(start_equity=self.broker.get_cash_balance())
+        excluded_counts: dict[str, int] = {}
+
+        for ts in self.data_provider.get_session_timestamps():
+            self.step(ts, result, excluded_counts)
+
+        self._liquidate_all(self.data_provider.get_session_timestamps()[-1], result)
+        result.final_equity = self.broker.get_cash_balance()
+        result.excluded_counts = excluded_counts
+        return result
+
+    def step(self, ts: datetime, result: BacktestResult, excluded_counts: dict[str, int]) -> None:
+        """timestamp ts 하나에 대한 청산->진입->자산갱신 한 사이클.
+
+        백테스트(run)와 실시간 루프(trading.execution.live_runner)가 동일 로직을 공유하도록
+        분리했다 - 백테스트로 검증한 판단 로직이 실거래에서도 그대로 재사용된다.
+        """
+        universe = self.data_provider.get_universe(ts)
+        snapshots = {sym: self.data_provider.get_snapshot(sym, ts) for sym in universe}
+        features = self.feature_extractor.extract_batch(snapshots)
+        regime = self._current_regime(ts)
+        phase = self.phase_selector.phase_name(ts)
+
+        self._process_exits(ts, snapshots, features, result)
+
+        elapsed = minutes_since_open(ts, self.config.market_open)
+        past_liquidation_cutoff = elapsed >= self._force_liquidation_elapsed
+        if not past_liquidation_cutoff:
+            self._process_entries(ts, phase, regime, snapshots, features, result, excluded_counts)
+
+        self.risk_manager.update_equity(self.broker.portfolio_value(ts))
+        result.equity_curve.append((ts, self.broker.portfolio_value(ts)))
+
+    def _process_exits(self, ts, snapshots, features, result: BacktestResult) -> None:
+        for symbol, position in list(self.broker.get_positions().items()):
+            snap = snapshots.get(symbol) or self.data_provider.get_snapshot(symbol, ts)
+            feat = features.get(symbol) or self.feature_extractor.extract_single(snap)
+            minutes_held = (ts - position.opened_at).total_seconds() / 60
+
+            strategy = self.phase_selector.get(position.strategy)
+            decision = strategy.evaluate_exit(snap, feat, position, minutes_held)
+
+            elapsed = minutes_since_open(ts, self.config.market_open)
+            if not decision.should_exit and elapsed >= self._hard_close_elapsed:
+                decision.should_exit = True
+                decision.reason = "hard_close_liquidation"
+
+            if decision.should_exit:
+                self._execute_exit(ts, symbol, position, decision.reason, result)
+
+    def _execute_exit(self, ts, symbol, position: Position, reason: str, result: BacktestResult) -> None:
+        order = self.broker.place_order(symbol, OrderSide.SELL, position.quantity, 0.0, ts, strategy=position.strategy)
+        if order.status != OrderStatus.FILLED:
+            return
+        self.risk_manager.register_exit(symbol, ts, order.realized_pnl)
+
+        ctx = self._entry_context.pop(symbol, None)
+        if ctx is not None:
+            pnl_pct = (order.price / ctx["entry_price"] - 1) * 100
+            result.trades.append(
+                TradeRecord(
+                    symbol=symbol,
+                    phase=ctx["phase"],
+                    entry_ts=ctx["entry_ts"],
+                    exit_ts=ts,
+                    entry_price=ctx["entry_price"],
+                    exit_price=order.price,
+                    quantity=position.quantity,
+                    pnl_krw=order.realized_pnl,
+                    pnl_pct=pnl_pct,
+                    exit_reason=reason,
+                    entry_score=ctx["score"],
+                    features_at_entry=ctx["features"],
+                )
+            )
+
+    def _process_entries(self, ts, phase, regime, snapshots, features, result: BacktestResult, excluded_counts: dict) -> None:
+        strategy = self.phase_selector.get(phase)
+        positions = self.broker.get_positions()
+
+        for symbol, snap in snapshots.items():
+            if symbol in positions:
+                continue
+
+            excluded, reasons = is_excluded(snap, phase, self.config)
+            if excluded:
+                for r in reasons:
+                    key = r.split(" (")[0].split(":")[0]
+                    excluded_counts[key] = excluded_counts.get(key, 0) + 1
+                continue
+
+            feat = features[symbol]
+            score_result = self.scoring_engine.score(feat, phase)
+            entry_decision = strategy.evaluate_entry(snap, feat, score_result, regime)
+            if not entry_decision.should_enter:
+                continue
+
+            can_enter, reject_reason = self.risk_manager.can_enter(
+                symbol, ts, snap.last_close, entry_decision.stop_price, entry_decision.target_price
+            )
+            if not can_enter:
+                result.rejected_by_risk.append((ts, symbol, reject_reason))
+                continue
+
+            qty = self.risk_manager.position_size(self.broker.get_cash_balance(), snap.last_close)
+            if qty <= 0:
+                continue
+
+            order = self.broker.place_order(
+                symbol, OrderSide.BUY, qty, snap.last_close, ts,
+                strategy=phase, stop_price=entry_decision.stop_price, target_price=entry_decision.target_price,
+            )
+            if order.status == OrderStatus.FILLED:
+                self.risk_manager.register_entry(symbol, ts)
+                self._entry_context[symbol] = {
+                    "entry_price": order.price,
+                    "entry_ts": ts,
+                    "phase": phase,
+                    "score": score_result.score,
+                    "features": feat.as_dict(),
+                }
+
+    def _liquidate_all(self, ts: datetime, result: BacktestResult) -> None:
+        for symbol, position in list(self.broker.get_positions().items()):
+            self._execute_exit(ts, symbol, position, "session_end_liquidation", result)
