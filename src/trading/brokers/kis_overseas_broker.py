@@ -53,12 +53,19 @@ class KISOverseasBroker(BrokerClient):
         account_product_code: str = "01",
         exchange_map: dict[str, str] | None = None,
         default_exchange: str = DEFAULT_EXCHANGE,
+        cash_override: float | None = None,
     ):
         self.session = session
         self.account_no = account_no
         self.account_product_code = account_product_code
         self.exchange_map = exchange_map or {}
         self.default_exchange = default_exchange
+        # 해외 예수금 필드를 API 응답에서 확정하지 못했기 때문에(get_cash_balance 참고),
+        # cash_override로 실제 예수금(USD)을 알려주면 그 값을 기준으로 매수/매도 체결마다
+        # 로컬에서 증감을 추적한다 - PaperBroker와 비슷한 방식의 근사치다. 이 값은 KIS의
+        # 실제 서버 잔고와 조금씩 어긋날 수 있으니(수수료/체결가 근사 오차 등), 주기적으로
+        # KIS 앱에서 실제 잔고를 확인해 재시작 시 갱신해줄 것을 권장한다.
+        self._estimated_cash: float | None = cash_override
 
     @property
     def use_virtual(self) -> bool:
@@ -106,18 +113,23 @@ class KISOverseasBroker(BrokerClient):
 
     # ---------- BrokerClient ----------
     def get_cash_balance(self) -> float:
+        if self._estimated_cash is not None:
+            return self._estimated_cash
+
         body = self._fetch_balance()
         output2 = body.get("output2", {})
         if isinstance(output2, list):
             output2 = output2[0] if output2 else {}
         for key in _CASH_FIELD_CANDIDATES:
             if key in output2:
-                return float(output2[key])
+                self._estimated_cash = float(output2[key])
+                return self._estimated_cash
         logger.warning(
-            "해외주식 예수금 필드를 응답에서 찾지 못했다 (후보: %s). 0.0을 반환한다 - "
-            "실제 예수금은 KIS 앱에서 직접 확인할 것. 응답 output2 키: %s",
+            "해외주식 예수금 필드를 응답에서 찾지 못했다 (후보: %s). 0.0으로 시작한다 - "
+            "실제 예수금은 KIS 앱에서 직접 확인 후 cash_override로 지정할 것. 응답 output2 키: %s",
             _CASH_FIELD_CANDIDATES, list(output2.keys()),
         )
+        self._estimated_cash = 0.0
         return 0.0
 
     def get_positions(self) -> dict[str, Position]:
@@ -187,4 +199,13 @@ class KISOverseasBroker(BrokerClient):
             )
 
         order_id = payload["output"]["ODNO"]
+
+        # 예수금 API 필드를 못 찾는 문제(get_cash_balance 참고)를 우회하기 위해, 체결
+        # 시마다 로컬 추정치를 직접 증감시킨다 - 다음 포지션 사이징 호출이 최신 값을 보게 된다.
+        self.get_cash_balance()  # _estimated_cash가 아직 None이면 여기서 시딩된다
+        if side == OrderSide.BUY:
+            self._estimated_cash = max((self._estimated_cash or 0.0) - price * quantity, 0.0)
+        else:
+            self._estimated_cash = (self._estimated_cash or 0.0) + price * quantity
+
         return OrderResult(symbol, side, quantity, price, OrderStatus.PENDING, order_id, timestamp, reason="fill_price_unconfirmed")

@@ -56,6 +56,11 @@ def main() -> None:
     )
     parser.add_argument("--poll-interval", type=int, default=60)
     parser.add_argument("--env-file", default=".env", help="자격증명을 읽을 .env 파일 (모의/실전 키를 섞이지 않게 분리 가능)")
+    parser.add_argument(
+        "--cash-override", type=float, default=None,
+        help="--market US --broker kis 전용. 해외 예수금 API 필드를 찾지 못해 0으로 나올 때, "
+             "KIS 앱에서 확인한 실제 USD 예수금을 직접 지정한다 (매수/매도마다 로컬에서 증감 추적).",
+    )
     args = parser.parse_args()
 
     load_dotenv(REPO_ROOT / args.env_file, override=True)
@@ -91,8 +96,11 @@ def main() -> None:
                     sym, exch = pair.split(":", 1)
                     exchange_map[sym.strip()] = exch.strip()
             broker = KISOverseasBroker(
-                session, account_no=account_no, account_product_code=account_product_code, exchange_map=exchange_map
+                session, account_no=account_no, account_product_code=account_product_code, exchange_map=exchange_map,
+                cash_override=args.cash_override,
             )
+            if args.cash_override is not None:
+                logging.info("해외 예수금을 수동 지정값(%.2f USD)으로 사용합니다.", args.cash_override)
             provider = KISOverseasMarketDataProvider(session, watchlist=watchlist, exchange_map=exchange_map)
             logging.warning(
                 "미국장 KIS 연동은 분봉 데이터가 없어 폴링 간격을 1개 봉으로 근사합니다 - "

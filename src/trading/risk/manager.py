@@ -33,6 +33,10 @@ class RiskManager:
 
     def update_equity(self, equity: float) -> None:
         self.state.current_equity = equity
+        if self.state.start_equity <= 0:
+            # 기준 자산이 0/미확정이면 손실률 계산이 무의미하다(0으로 나누기 방지) -
+            # 실거래에서 브로커가 예수금 필드를 못 찾아 0을 반환하는 경우 등.
+            return
         daily_loss_pct = (self.state.start_equity - equity) / self.state.start_equity * 100
         if daily_loss_pct >= self.cfg["daily_max_loss_pct"] and not self.state.trading_halted:
             self.state.trading_halted = True

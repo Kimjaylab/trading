@@ -253,3 +253,30 @@ def test_rate_limit_response_is_retried_with_backoff():
 
     assert call_count["n"] == 1  # 첫 시도는 rate-limit로 실패, 재시도로 성공했어야 함
     assert balance == 1_000_000.0
+
+
+def test_overseas_cash_override_used_instead_of_api_field():
+    session, _ = _session()
+    broker = KISOverseasBroker(session, account_no="12345678", cash_override=5000.0)
+
+    assert broker.get_cash_balance() == 5000.0
+
+
+def test_overseas_cash_override_decreases_on_buy_and_increases_on_sell():
+    session, _ = _session()
+    broker = KISOverseasBroker(session, account_no="12345678", exchange_map={"AAPL": "NASDAQ"}, cash_override=5000.0)
+
+    broker.place_order("AAPL", OrderSide.BUY, 10, 100.0, datetime.now())
+    assert broker.get_cash_balance() == 4000.0  # 5000 - 10*100
+
+    broker.place_order("AAPL", OrderSide.SELL, 5, 110.0, datetime.now())
+    assert broker.get_cash_balance() == 4550.0  # 4000 + 5*110
+
+
+def test_overseas_cash_estimate_never_goes_negative():
+    session, _ = _session()
+    broker = KISOverseasBroker(session, account_no="12345678", exchange_map={"AAPL": "NASDAQ"}, cash_override=100.0)
+
+    broker.place_order("AAPL", OrderSide.BUY, 10, 100.0, datetime.now())  # 100 - 1000 -> 음수가 되면 안 됨
+
+    assert broker.get_cash_balance() == 0.0

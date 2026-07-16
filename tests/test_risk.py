@@ -64,3 +64,23 @@ def test_position_size_shrinks_after_consecutive_losses():
     rm.register_entry("A000001", ts)
     rm.register_exit("A000001", ts, realized_pnl=-10_000)
     assert rm.position_size_multiplier() < 1.0
+
+
+def test_update_equity_does_not_crash_when_start_equity_is_zero():
+    """실거래 브로커가 예수금 필드를 못 찾아 0을 반환하는 경우, start_equity=0으로
+    RiskManager가 생성될 수 있다 - 이때 0으로 나누기 에러 없이 그냥 넘어가야 한다."""
+    rm = RiskManager(start_equity=0.0, config=get_config())
+    rm.update_equity(0.0)  # 예외가 나면 테스트 실패
+    assert not rm.state.trading_halted
+
+
+def test_register_partial_exit_keeps_open_positions_and_consecutive_losses_unchanged():
+    rm = RiskManager(start_equity=10_000_000, config=get_config())
+    ts = datetime(2026, 7, 16, 9, 5)
+    rm.register_entry("A000001", ts)
+
+    rm.register_partial_exit(realized_pnl=50_000)
+
+    assert rm.state.open_positions == 1  # 부분청산은 보유종목수를 줄이지 않는다
+    assert rm.state.consecutive_losses == 0
+    assert rm.state.realized_pnl_today == 50_000
