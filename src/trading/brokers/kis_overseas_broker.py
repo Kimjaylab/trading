@@ -1,15 +1,19 @@
 """한국투자증권(KIS) Open API REST 어댑터 - 해외주식(미국 등) 전용.
 
-*** 매우 중요 - 신뢰도 낮은 부분 명시 ***
-아래 TR_ID 값(JTTT1002U 등)은 커뮤니티에 공개된 KIS 해외주식 주문 래퍼들에서
-통용되는 값을 참고해 채운 것으로, 이 개발 환경(네트워크/실계좌 접근 불가)에서
-KIS 공식 문서와 대조하거나 실제로 호출해보지 못했다. 국내주식 TR_ID(TTTC0802U 등)보다
-확신도가 낮다. 반드시 KIS 개발자센터의 "해외주식 주문" 문서에서 다음을 직접 확인할 것:
-  - TR_ID 정확한 값 (실전/모의 x 매수/매도)
-  - OVRS_EXCG_CD 거래소코드 정확한 값 (나스닥/뉴욕/아멕스 구분)
+TR_ID는 같은 계정(kimjaylab)의 `claude` 저장소 `claude/ai-trading-bot-kiwoom-kagv8a`
+브랜치에 있던 별도 프로젝트(trading_bot/kis_client.py, KIS 공식 GitHub 레퍼런스를
+근거로 작성됨)를 참고해 정정했다: 매수/매도 실전 TR_ID에 "T"로 시작하는 값
+(TTTT1002U/TTTT1006U)을 쓰고, 모의투자는 첫 글자를 "V"로 바꾼 값(VTTT1002U/VTTT1006U)을
+쓴다 - 이전 버전에서 썼던 JTTT.../VTTT1001U 조합보다 이 쪽이 국내주식 TR_ID 패턴
+(TTTC.../VTTC...)과 일관되어 신뢰도가 더 높다고 판단했다.
+
+*** 그래도 여전히 확인이 필요하다 ***: 이 환경은 네트워크/실계좌 접근이 불가능해
+실제로 호출해 검증하지 못했다. 실사용 전 KIS 개발자센터의 "해외주식 주문" 문서에서
+반드시 대조할 것. 특히:
+  - OVRS_EXCG_CD 거래소코드 (brokers/kis_exchange_codes.py 참고 - trading/quotations
+    API가 서로 다른 코드 체계를 쓴다고 알려져 있음, 확인 필요)
   - 해외주식은 시장가 주문 지원이 거래소/시간대별로 제한적이라, 이 구현은
-    항상 지정가(지정가+현재가 근사)로 주문한다 - place_order의 price 인자가
-    지정가로 그대로 쓰인다.
+    항상 지정가로 주문한다 (place_order의 price 인자가 지정가로 그대로 쓰인다)
   - 정규장 외 시간대(after-hours) 처리 여부
 
 이 파일도 BrokerClient 인터페이스의 "연결 지점"만 제공한다. 실사용 전 모의투자
@@ -22,15 +26,15 @@ from datetime import datetime
 import requests
 
 from trading.brokers.interfaces import BrokerClient, OrderResult, OrderSide, OrderStatus, Position
-from trading.brokers.kis_session import KISSession
+from trading.brokers.kis_exchange_codes import DEFAULT_EXCHANGE, TRADING_EXCHANGE_CODES
+from trading.brokers.kis_session import KISAPIError, KISSession
 
-# 확인 필요: 커뮤니티 래퍼에서 널리 쓰이는 값. KIS 공식 문서와 반드시 대조할 것.
-TR_ID_BUY_REAL = "JTTT1002U"
-TR_ID_SELL_REAL = "JTTT1006U"
-TR_ID_BUY_VIRTUAL = "VTTT1002U"
-TR_ID_SELL_VIRTUAL = "VTTT1001U"
+TR_ID_BUY_REAL = "TTTT1002U"
+TR_ID_SELL_REAL = "TTTT1006U"
 
-DEFAULT_EXCHANGE = "NASD"  # NASD(나스닥)/NYSE(뉴욕)/AMEX(아멕스) - 확인 필요
+
+def _virtual_tr_id(real_tr_id: str) -> str:
+    return "V" + real_tr_id[1:]
 
 
 class KISOverseasBroker(BrokerClient):
@@ -56,48 +60,43 @@ class KISOverseasBroker(BrokerClient):
     def domain(self) -> str:
         return self.session.domain
 
-    def _exchange_for(self, symbol: str) -> str:
+    def _exchange_name_for(self, symbol: str) -> str:
         return self.exchange_map.get(symbol, self.default_exchange)
+
+    def _trading_exchange_code_for(self, symbol: str) -> str:
+        return TRADING_EXCHANGE_CODES[self._exchange_name_for(symbol)]
+
+    def _balance_params(self) -> dict:
+        return {
+            "CANO": self.account_no,
+            "ACNT_PRDT_CD": self.account_product_code,
+            "OVRS_EXCG_CD": TRADING_EXCHANGE_CODES[self.default_exchange],
+            "TR_CRCY_CD": "USD",
+            "CTX_AREA_FK200": "",
+            "CTX_AREA_NK200": "",
+        }
 
     # ---------- BrokerClient ----------
     def get_cash_balance(self) -> float:
         # TR_ID 확인 필요: 해외주식 예수금 조회
         tr_id = "VTTS3012R" if self.use_virtual else "TTTS3012R"
-        params = {
-            "CANO": self.account_no,
-            "ACNT_PRDT_CD": self.account_product_code,
-            "OVRS_EXCG_CD": self.default_exchange,
-            "TR_CRCY_CD": "USD",
-            "CTX_AREA_FK200": "",
-            "CTX_AREA_NK200": "",
-        }
-        resp = self.session.http.get(
+        resp = self.session.request(
+            "GET",
             f"{self.domain}/uapi/overseas-stock/v1/trading/inquire-psamount",
             headers=self.session.headers(tr_id),
-            params=params,
-            timeout=10,
+            params=self._balance_params(),
         )
-        resp.raise_for_status()
         body = resp.json()
         return float(body["output"]["frcr_dncl_amt1"])
 
     def get_positions(self) -> dict[str, Position]:
         tr_id = "VTTS3012R" if self.use_virtual else "TTTS3012R"
-        params = {
-            "CANO": self.account_no,
-            "ACNT_PRDT_CD": self.account_product_code,
-            "OVRS_EXCG_CD": self.default_exchange,
-            "TR_CRCY_CD": "USD",
-            "CTX_AREA_FK200": "",
-            "CTX_AREA_NK200": "",
-        }
-        resp = self.session.http.get(
+        resp = self.session.request(
+            "GET",
             f"{self.domain}/uapi/overseas-stock/v1/trading/inquire-balance",
             headers=self.session.headers(tr_id),
-            params=params,
-            timeout=10,
+            params=self._balance_params(),
         )
-        resp.raise_for_status()
         body = resp.json()
 
         positions: dict[str, Position] = {}
@@ -131,31 +130,29 @@ class KISOverseasBroker(BrokerClient):
         if price <= 0:
             return OrderResult(symbol, side, quantity, price, OrderStatus.REJECTED, "N/A", timestamp, reason="overseas_orders_require_limit_price")
 
-        if side == OrderSide.BUY:
-            tr_id = TR_ID_BUY_VIRTUAL if self.use_virtual else TR_ID_BUY_REAL
-        else:
-            tr_id = TR_ID_SELL_VIRTUAL if self.use_virtual else TR_ID_SELL_REAL
+        real_tr_id = TR_ID_BUY_REAL if side == OrderSide.BUY else TR_ID_SELL_REAL
+        tr_id = _virtual_tr_id(real_tr_id) if self.use_virtual else real_tr_id
 
         body = {
             "CANO": self.account_no,
             "ACNT_PRDT_CD": self.account_product_code,
-            "OVRS_EXCG_CD": self._exchange_for(symbol),
+            "OVRS_EXCG_CD": self._trading_exchange_code_for(symbol),
             "PDNO": symbol,
             "ORD_DVSN": "00",  # 00=지정가. 해외는 거래소별로 시장가 지원이 제한적이라 지정가 고정.
             "ORD_QTY": str(quantity),
-            "OVRS_ORD_UNPR": str(price),
+            "OVRS_ORD_UNPR": f"{price:.2f}",
             "ORD_SVR_DVSN_CD": "0",
         }
         try:
-            resp = self.session.http.post(
+            hashkey = self.session.get_hashkey(body)
+            resp = self.session.request(
+                "POST",
                 f"{self.domain}/uapi/overseas-stock/v1/trading/order",
-                headers=self.session.headers(tr_id),
-                json=body,
-                timeout=10,
+                headers=self.session.headers(tr_id, extra={"hashkey": hashkey}),
+                json_body=body,
             )
-            resp.raise_for_status()
             payload = resp.json()
-        except requests.RequestException as exc:
+        except (requests.RequestException, KISAPIError) as exc:
             return OrderResult(symbol, side, quantity, price, OrderStatus.REJECTED, "N/A", timestamp, reason=str(exc))
 
         if payload.get("rt_cd") != "0":

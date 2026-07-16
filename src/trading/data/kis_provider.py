@@ -21,7 +21,6 @@ from __future__ import annotations
 from datetime import datetime
 
 import pandas as pd
-import requests
 
 from trading.brokers.kis_session import KISSession
 from trading.data.interfaces import MarketDataProvider, MarketSnapshot
@@ -83,13 +82,12 @@ class KISMarketDataProvider(MarketDataProvider):
     def _fetch_price(self, symbol: str) -> dict:
         tr_id = "FHKST01010100"
         params = {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": symbol}
-        resp = self.session.http.get(
+        resp = self.session.request(
+            "GET",
             f"{self.domain}/uapi/domestic-stock/v1/quotations/inquire-price",
             headers=self.session.headers(tr_id),
             params=params,
-            timeout=10,
         )
-        resp.raise_for_status()
         output = resp.json().get("output", {})
         return {
             "price": float(output.get("stck_prpr", 0.0)),
@@ -100,13 +98,12 @@ class KISMarketDataProvider(MarketDataProvider):
     def _fetch_orderbook(self, symbol: str) -> tuple[float, float, int, int]:
         tr_id = "FHKST01010200"
         params = {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": symbol}
-        resp = self.session.http.get(
+        resp = self.session.request(
+            "GET",
             f"{self.domain}/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn",
             headers=self.session.headers(tr_id),
             params=params,
-            timeout=10,
         )
-        resp.raise_for_status()
         output = resp.json().get("output1", {})
         bid = float(output.get("bidp1", 0.0))
         ask = float(output.get("askp1", 0.0))
@@ -123,13 +120,12 @@ class KISMarketDataProvider(MarketDataProvider):
             "FID_INPUT_HOUR_1": "",
             "FID_PW_DATA_INCU_YN": "Y",
         }
-        resp = self.session.http.get(
+        resp = self.session.request(
+            "GET",
             f"{self.domain}/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice",
             headers=self.session.headers(tr_id),
             params=params,
-            timeout=10,
         )
-        resp.raise_for_status()
         rows = resp.json().get("output2", [])
         if not rows:
             return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
@@ -163,13 +159,12 @@ class KISMarketDataProvider(MarketDataProvider):
             "FID_PERIOD_DIV_CODE": "D",
             "FID_ORG_ADJ_PRC": "0",
         }
-        resp = self.session.http.get(
+        resp = self.session.request(
+            "GET",
             f"{self.domain}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice",
             headers=self.session.headers(tr_id),
             params=params,
-            timeout=10,
         )
-        resp.raise_for_status()
         rows = resp.json().get("output2", [])[:lookback_days]
 
         records = []

@@ -7,3 +7,4 @@ venv/
 *.log
 data/live/
 .env
+.kis_token_cache_*.json

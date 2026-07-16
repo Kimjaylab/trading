@@ -5,12 +5,13 @@
 실사용 전 반드시 다음을 직접 검증할 것:
   1. 모의투자(virtual-trading) 도메인으로 먼저 연동 테스트 (openapivts.koreainvestment.com:29443)
   2. TR_ID, 요청/응답 필드는 KIS 공식 API 문서(개발자센터)와 대조
-  3. 토큰 발급 빈도 제한(1일 1회 권장), Rate limit(초당 건수 제한) 준수
-  4. 주문 수량/가격 단위(호가단위) 검증 로직 추가
+  3. 주문 수량/가격 단위(호가단위) 검증 로직 추가
 
 이 파일은 BrokerClient 인터페이스를 만족하는 "연결 지점"을 제공하는 것이 목적이며,
 전략/리스크/백테스트 로직은 이 클래스의 구현 여부와 무관하게 이미 완성되어 있다.
 미국주식은 brokers/kis_overseas_broker.py를 사용할 것 (엔드포인트/TR_ID 완전히 다름).
+
+요청 쓰로틀링/재시도/토큰캐시는 KISSession이 담당한다(브로커/시세공급자 공유).
 """
 from __future__ import annotations
 
@@ -19,7 +20,7 @@ from datetime import datetime
 import requests
 
 from trading.brokers.interfaces import BrokerClient, OrderResult, OrderSide, OrderStatus, Position
-from trading.brokers.kis_session import KISSession
+from trading.brokers.kis_session import KISAPIError, KISSession
 
 
 class KISBroker(BrokerClient):
@@ -41,11 +42,8 @@ class KISBroker(BrokerClient):
     def domain(self) -> str:
         return self.session.domain
 
-    # ---------- BrokerClient ----------
-    def get_cash_balance(self) -> float:
-        # TR_ID: 모의투자 VTTC8908R / 실전 TTTC8908R (예수금 조회) - 문서 대조 필요
-        tr_id = "VTTC8908R" if self.use_virtual else "TTTC8908R"
-        params = {
+    def _balance_params(self) -> dict:
+        return {
             "CANO": self.account_no,
             "ACNT_PRDT_CD": self.account_product_code,
             "AFHR_FLPR_YN": "N",
@@ -58,13 +56,17 @@ class KISBroker(BrokerClient):
             "CTX_AREA_FK100": "",
             "CTX_AREA_NK100": "",
         }
-        resp = self.session.http.get(
+
+    # ---------- BrokerClient ----------
+    def get_cash_balance(self) -> float:
+        # TR_ID: 모의투자 VTTC8908R / 실전 TTTC8908R (예수금 조회) - 문서 대조 필요
+        tr_id = "VTTC8908R" if self.use_virtual else "TTTC8908R"
+        resp = self.session.request(
+            "GET",
             f"{self.domain}/uapi/domestic-stock/v1/trading/inquire-balance",
             headers=self.session.headers(tr_id),
-            params=params,
-            timeout=10,
+            params=self._balance_params(),
         )
-        resp.raise_for_status()
         body = resp.json()
         return float(body["output2"][0]["dnca_tot_amt"])
 
@@ -79,26 +81,12 @@ class KISBroker(BrokerClient):
         이 메서드는 장애 복구/검증용 보조 수단으로만 사용할 것을 권장한다.
         """
         tr_id = "VTTC8434R" if self.use_virtual else "TTTC8434R"
-        params = {
-            "CANO": self.account_no,
-            "ACNT_PRDT_CD": self.account_product_code,
-            "AFHR_FLPR_YN": "N",
-            "OFL_YN": "",
-            "INQR_DVSN": "02",
-            "UNPR_DVSN": "01",
-            "FUND_STTL_ICLD_YN": "N",
-            "FNCG_AMT_AUTO_RDPT_YN": "N",
-            "PRCS_DVSN": "01",
-            "CTX_AREA_FK100": "",
-            "CTX_AREA_NK100": "",
-        }
-        resp = self.session.http.get(
+        resp = self.session.request(
+            "GET",
             f"{self.domain}/uapi/domestic-stock/v1/trading/inquire-balance",
             headers=self.session.headers(tr_id),
-            params=params,
-            timeout=10,
+            params=self._balance_params(),
         )
-        resp.raise_for_status()
         body = resp.json()
 
         positions: dict[str, Position] = {}
@@ -144,15 +132,15 @@ class KISBroker(BrokerClient):
             "ORD_UNPR": "0",
         }
         try:
-            resp = self.session.http.post(
+            hashkey = self.session.get_hashkey(body)
+            resp = self.session.request(
+                "POST",
                 f"{self.domain}/uapi/domestic-stock/v1/trading/order-cash",
-                headers=self.session.headers(tr_id),
-                json=body,
-                timeout=10,
+                headers=self.session.headers(tr_id, extra={"hashkey": hashkey}),
+                json_body=body,
             )
-            resp.raise_for_status()
             payload = resp.json()
-        except requests.RequestException as exc:
+        except (requests.RequestException, KISAPIError) as exc:
             return OrderResult(symbol, side, quantity, price, OrderStatus.REJECTED, "N/A", timestamp, reason=str(exc))
 
         if payload.get("rt_cd") != "0":

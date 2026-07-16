@@ -8,10 +8,11 @@ KIS 모의투자 계좌를 연결해 충분히 검증한 뒤에만 --no-virtual(
 필요한 환경변수 (KIS 브로커 사용 시):
   KIS_APP_KEY, KIS_APP_SECRET, KIS_ACCOUNT_NO, (선택) KIS_ACCOUNT_PRODUCT_CODE
 
-주의: --broker kis를 선택해도 실시간 시세는 KISMarketDataProvider(국내 전용, 미검증)를
-사용한다. 미국주식 실시간 시세 공급자는 아직 구현하지 않았다 - data/kis_provider.py는
-국내(KRX)만 지원한다. 미국장 페이퍼트레이딩을 시험해보려면 --broker paper로
-SyntheticDataProvider를 계속 사용하거나, 직접 해외 시세 공급자를 추가로 구현할 것.
+--market US로 --broker kis를 쓰면 KISOverseasBroker + KISOverseasMarketDataProvider가
+연결된다. 이 해외 경로는 국내(KRX) 경로보다 신뢰도가 더 낮다 - 특히 분봉 데이터가
+없어 폴링할 때마다 받은 현재가를 1개 봉으로 근사한다(brokers/kis_overseas_broker.py,
+data/kis_overseas_provider.py 상단 주석 참고). --exchange-map으로 종목별 거래소를
+지정할 수 있다 (예: AAPL:NASDAQ,IBM:NYSE). 지정하지 않으면 전부 NASDAQ으로 가정한다.
 """
 from __future__ import annotations
 
@@ -24,9 +25,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from trading.brokers.kis_broker import KISBroker
+from trading.brokers.kis_overseas_broker import KISOverseasBroker
 from trading.brokers.kis_session import KISSession
 from trading.brokers.paper_broker import PaperBroker
 from trading.config import get_config
+from trading.data.kis_overseas_provider import KISOverseasMarketDataProvider
 from trading.data.kis_provider import KISMarketDataProvider
 from trading.data.synthetic import SyntheticDataProvider
 from trading.execution.live_runner import LiveRunner
@@ -40,7 +43,11 @@ def main() -> None:
     parser.add_argument("--virtual", action="store_true", default=True, help="KIS 모의투자 도메인 사용 (기본값)")
     parser.add_argument("--no-virtual", dest="virtual", action="store_false", help="KIS 실전 도메인 사용 - 매우 신중히 사용할 것")
     parser.add_argument(
-        "--watchlist", type=str, default="", help="쉼표로 구분한 관심종목 코드 (--broker kis일 때 필수, 예: 005930,000660)"
+        "--watchlist", type=str, default="", help="쉼표로 구분한 관심종목 코드 (--broker kis일 때 필수, 예: 005930,000660 또는 AAPL,MSFT)"
+    )
+    parser.add_argument(
+        "--exchange-map", type=str, default="",
+        help="--market US --broker kis 일 때만 사용. 종목별 거래소 (예: AAPL:NASDAQ,IBM:NYSE). 미지정 종목은 NASDAQ.",
     )
     parser.add_argument("--poll-interval", type=int, default=60)
     args = parser.parse_args()
@@ -53,8 +60,6 @@ def main() -> None:
         provider = SyntheticDataProvider(n_symbols=24, market_open=config.market_open, market_close=config.market_close)
         broker = PaperBroker(provider, args.cash)
     else:
-        if args.market != "KRX":
-            raise SystemExit("--broker kis는 현재 국내(KRX) 시세 공급자만 구현되어 있다 (data/kis_provider.py 참고).")
         if not args.watchlist:
             raise SystemExit("--broker kis 사용 시 --watchlist로 관심종목을 지정해야 한다.")
 
@@ -66,8 +71,25 @@ def main() -> None:
 
         session = KISSession(app_key, app_secret, use_virtual=args.virtual)
         account_product_code = os.environ.get("KIS_ACCOUNT_PRODUCT_CODE", "01")
-        broker = KISBroker(session, account_no=account_no, account_product_code=account_product_code)
-        provider = KISMarketDataProvider(session, watchlist=args.watchlist.split(","))
+        watchlist = args.watchlist.split(",")
+
+        if args.market == "KRX":
+            broker = KISBroker(session, account_no=account_no, account_product_code=account_product_code)
+            provider = KISMarketDataProvider(session, watchlist=watchlist)
+        else:
+            exchange_map = {}
+            for pair in args.exchange_map.split(","):
+                if ":" in pair:
+                    sym, exch = pair.split(":", 1)
+                    exchange_map[sym.strip()] = exch.strip()
+            broker = KISOverseasBroker(
+                session, account_no=account_no, account_product_code=account_product_code, exchange_map=exchange_map
+            )
+            provider = KISOverseasMarketDataProvider(session, watchlist=watchlist, exchange_map=exchange_map)
+            logging.warning(
+                "미국장 KIS 연동은 분봉 데이터가 없어 폴링 간격을 1개 봉으로 근사합니다 - "
+                "신뢰도가 국내(KRX) 경로보다 낮습니다."
+            )
 
         if not args.virtual:
             logging.warning("!!! 실전 도메인(--no-virtual)으로 실행합니다. 실제 자금이 사용됩니다 !!!")

@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import tempfile
 from datetime import datetime
 
 from trading.brokers.interfaces import OrderSide, OrderStatus
@@ -18,10 +19,7 @@ class FakeResponse:
     def __init__(self, json_body: dict, status_code: int = 200):
         self._json = json_body
         self.status_code = status_code
-
-    def raise_for_status(self):
-        if self.status_code >= 400:
-            raise RuntimeError(f"HTTP {self.status_code}")
+        self.text = str(json_body)
 
     def json(self):
         return self._json
@@ -35,21 +33,24 @@ class FakeHTTP:
         self.token_call_count = 0
         self.next_responses: dict[str, FakeResponse] = {}
 
-    def post(self, url, json=None, headers=None, timeout=None, **kwargs):
-        self.calls.append({"method": "POST", "url": url, "json": json, "headers": headers})
+    def request(self, method, url, params=None, json=None, headers=None, timeout=None, **kwargs):
+        self.calls.append({"method": method, "url": url, "json": json, "params": params, "headers": headers})
         if "/oauth2/tokenP" in url:
             self.token_call_count += 1
             return FakeResponse({"access_token": "fake-token", "expires_in": 86400})
+        if "/uapi/hashkey" in url:
+            return FakeResponse({"HASH": "fake-hash"})
         return self.next_responses.get(url, FakeResponse({"rt_cd": "0", "output": {"ODNO": "0000001"}}))
-
-    def get(self, url, params=None, headers=None, timeout=None, **kwargs):
-        self.calls.append({"method": "GET", "url": url, "params": params, "headers": headers})
-        return self.next_responses.get(url, FakeResponse({}))
 
 
 def _session(use_virtual=True) -> tuple[KISSession, FakeHTTP]:
     fake = FakeHTTP()
-    return KISSession("appkey", "appsecret", use_virtual=use_virtual, http=fake), fake
+    # 매 테스트마다 고유한(존재하지 않는) 캐시 경로를 써서 테스트 간 토큰 캐시 오염을 막는다.
+    session = KISSession(
+        "appkey", "appsecret", use_virtual=use_virtual, http=fake,
+        request_interval_sec=0.0, token_cache_path=tempfile.mktemp(suffix=".json"),
+    )
+    return session, fake
 
 
 def test_token_is_cached_across_multiple_calls():
@@ -58,6 +59,15 @@ def test_token_is_cached_across_multiple_calls():
     session.ensure_token()
     session.ensure_token()
     assert fake.token_call_count == 1
+
+
+def test_hashkey_is_requested_before_domestic_order():
+    session, fake = _session(use_virtual=True)
+    broker = KISBroker(session, account_no="12345678", account_product_code="01")
+
+    broker.place_order("005930", OrderSide.BUY, 10, 70000, datetime.now())
+
+    assert any("/uapi/hashkey" in c["url"] for c in fake.calls)
 
 
 def test_domestic_place_order_uses_virtual_tr_id_and_market_order():
@@ -126,13 +136,47 @@ def test_overseas_place_order_requires_limit_price():
     assert result.reason == "overseas_orders_require_limit_price"
 
 
-def test_overseas_place_order_uses_exchange_map():
-    session, fake = _session()
-    broker = KISOverseasBroker(session, account_no="12345678", exchange_map={"AAPL": "NASD", "IBM": "NYSE"})
+def test_overseas_place_order_uses_exchange_map_and_correct_tr_id():
+    session, fake = _session(use_virtual=True)
+    broker = KISOverseasBroker(session, account_no="12345678", exchange_map={"AAPL": "NASDAQ", "IBM": "NYSE"})
 
     broker.place_order("IBM", OrderSide.BUY, 5, 150.0, datetime.now())
 
     order_call = next(c for c in fake.calls if "/overseas-stock/v1/trading/order" in c["url"])
     assert order_call["json"]["OVRS_EXCG_CD"] == "NYSE"
-    assert order_call["json"]["OVRS_ORD_UNPR"] == "150.0"
+    assert order_call["json"]["OVRS_ORD_UNPR"] == "150.00"
     assert order_call["headers"]["tr_id"] == "VTTT1002U"
+    assert any("/uapi/hashkey" in c["url"] for c in fake.calls)
+
+
+def test_overseas_place_order_uses_real_tr_id_for_sell():
+    session, fake = _session(use_virtual=False)
+    broker = KISOverseasBroker(session, account_no="12345678")
+
+    broker.place_order("AAPL", OrderSide.SELL, 5, 150.0, datetime.now())
+
+    order_call = next(c for c in fake.calls if "/overseas-stock/v1/trading/order" in c["url"])
+    assert order_call["headers"]["tr_id"] == "TTTT1006U"
+
+
+def test_rate_limit_response_is_retried_with_backoff():
+    session, fake = _session()
+    url = f"{session.domain}/uapi/domestic-stock/v1/trading/inquire-balance"
+    fake.next_responses[url] = FakeResponse({"output2": [{"dnca_tot_amt": "1000000"}]})
+    call_count = {"n": 0}
+
+    original_request = fake.request
+
+    def flaky_request(method, u, **kwargs):
+        if u == url and call_count["n"] == 0:
+            call_count["n"] += 1
+            return FakeResponse({"rt_cd": "9", "msg_cd": "EGW00201"}, status_code=500)
+        return original_request(method, u, **kwargs)
+
+    fake.request = flaky_request
+    broker = KISBroker(session, account_no="12345678")
+
+    balance = broker.get_cash_balance()
+
+    assert call_count["n"] == 1  # 첫 시도는 rate-limit로 실패, 재시도로 성공했어야 함
+    assert balance == 1_000_000.0
