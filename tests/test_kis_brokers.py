@@ -9,10 +9,12 @@ from __future__ import annotations
 import tempfile
 from datetime import datetime
 
+import pytest
+
 from trading.brokers.interfaces import OrderSide, OrderStatus
 from trading.brokers.kis_broker import KISBroker
 from trading.brokers.kis_overseas_broker import KISOverseasBroker
-from trading.brokers.kis_session import KISSession
+from trading.brokers.kis_session import KISAPIError, KISSession
 
 
 class FakeResponse:
@@ -110,6 +112,7 @@ def test_domestic_get_positions_parses_and_filters_zero_qty():
     url = f"{session.domain}/uapi/domestic-stock/v1/trading/inquire-balance"
     fake.next_responses[url] = FakeResponse(
         {
+            "rt_cd": "0",
             "output1": [
                 {"pdno": "005930", "hldg_qty": "10", "pchs_avg_pric": "70000"},
                 {"pdno": "000660", "hldg_qty": "0", "pchs_avg_pric": "150000"},
@@ -124,6 +127,31 @@ def test_domestic_get_positions_parses_and_filters_zero_qty():
     assert set(positions.keys()) == {"005930"}
     assert positions["005930"].quantity == 10
     assert positions["005930"].avg_price == 70000.0
+
+
+def test_domestic_get_cash_balance_raises_clear_error_on_invalid_account():
+    session, fake = _session()
+    url = f"{session.domain}/uapi/domestic-stock/v1/trading/inquire-balance"
+    fake.next_responses[url] = FakeResponse(
+        {"rt_cd": "2", "msg_cd": "OPSQ2000", "msg1": "ERROR : INPUT INVALID_CHECK_ACNO"}
+    )
+    broker = KISBroker(session, account_no="bad-account")
+
+    with pytest.raises(KISAPIError, match="INVALID_CHECK_ACNO"):
+        broker.get_cash_balance()
+
+
+def test_domestic_get_positions_raises_clear_error_instead_of_silently_empty():
+    """get_positions()가 에러 응답을 '포지션 없음'으로 잘못 삼키지 않는지 확인한다."""
+    session, fake = _session()
+    url = f"{session.domain}/uapi/domestic-stock/v1/trading/inquire-balance"
+    fake.next_responses[url] = FakeResponse(
+        {"rt_cd": "2", "msg_cd": "OPSQ2000", "msg1": "ERROR : INPUT INVALID_CHECK_ACNO"}
+    )
+    broker = KISBroker(session, account_no="bad-account")
+
+    with pytest.raises(KISAPIError, match="INVALID_CHECK_ACNO"):
+        broker.get_positions()
 
 
 def test_overseas_place_order_requires_limit_price():
@@ -162,7 +190,7 @@ def test_overseas_place_order_uses_real_tr_id_for_sell():
 def test_rate_limit_response_is_retried_with_backoff():
     session, fake = _session()
     url = f"{session.domain}/uapi/domestic-stock/v1/trading/inquire-balance"
-    fake.next_responses[url] = FakeResponse({"output2": [{"dnca_tot_amt": "1000000"}]})
+    fake.next_responses[url] = FakeResponse({"rt_cd": "0", "output2": [{"dnca_tot_amt": "1000000"}]})
     call_count = {"n": 0}
 
     original_request = fake.request

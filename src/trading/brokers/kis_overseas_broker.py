@@ -66,6 +66,11 @@ class KISOverseasBroker(BrokerClient):
     def _trading_exchange_code_for(self, symbol: str) -> str:
         return TRADING_EXCHANGE_CODES[self._exchange_name_for(symbol)]
 
+    @staticmethod
+    def _raise_if_error(body: dict) -> None:
+        if body.get("rt_cd") != "0":
+            raise KISAPIError(f"{body.get('msg_cd', '')} {body.get('msg1', 'unknown_error')}".strip())
+
     def _balance_params(self) -> dict:
         return {
             "CANO": self.account_no,
@@ -87,6 +92,7 @@ class KISOverseasBroker(BrokerClient):
             params=self._balance_params(),
         )
         body = resp.json()
+        self._raise_if_error(body)
         return float(body["output"]["frcr_dncl_amt1"])
 
     def get_positions(self) -> dict[str, Position]:
@@ -98,6 +104,7 @@ class KISOverseasBroker(BrokerClient):
             params=self._balance_params(),
         )
         body = resp.json()
+        self._raise_if_error(body)
 
         positions: dict[str, Position] = {}
         for row in body.get("output1", []):

@@ -42,6 +42,11 @@ class KISBroker(BrokerClient):
     def domain(self) -> str:
         return self.session.domain
 
+    @staticmethod
+    def _raise_if_error(body: dict) -> None:
+        if body.get("rt_cd") != "0":
+            raise KISAPIError(f"{body.get('msg_cd', '')} {body.get('msg1', 'unknown_error')}".strip())
+
     def _balance_params(self) -> dict:
         return {
             "CANO": self.account_no,
@@ -68,6 +73,7 @@ class KISBroker(BrokerClient):
             params=self._balance_params(),
         )
         body = resp.json()
+        self._raise_if_error(body)
         return float(body["output2"][0]["dnca_tot_amt"])
 
     def get_positions(self) -> dict[str, Position]:
@@ -88,6 +94,7 @@ class KISBroker(BrokerClient):
             params=self._balance_params(),
         )
         body = resp.json()
+        self._raise_if_error(body)
 
         positions: dict[str, Position] = {}
         for row in body.get("output1", []):
