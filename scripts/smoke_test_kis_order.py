@@ -29,7 +29,7 @@ from trading.brokers.kis_overseas_broker import KISOverseasBroker
 from trading.brokers.kis_session import KISSession
 from trading.data.kis_overseas_provider import KISOverseasMarketDataProvider
 
-load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def main() -> None:
@@ -41,7 +41,11 @@ def main() -> None:
     parser.add_argument("--side", choices=["buy", "sell"], default="buy")
     parser.add_argument("--virtual", action="store_true", default=True)
     parser.add_argument("--no-virtual", dest="virtual", action="store_false")
+    parser.add_argument("--env-file", default=".env", help="자격증명을 읽을 .env 파일 (모의/실전 키를 섞이지 않게 분리 가능)")
     args = parser.parse_args()
+
+    load_dotenv(REPO_ROOT / args.env_file, override=True)
+    print(f"환경변수 파일: {args.env_file}")
 
     app_key = os.environ.get("KIS_APP_KEY")
     app_secret = os.environ.get("KIS_APP_SECRET")
@@ -71,10 +75,17 @@ def main() -> None:
 
     print(f"\n모드: {'모의투자' if args.virtual else '*** 실전 - 실제 자금 사용됨 ***'}")
     print(f"주문: {args.side.upper()} {args.symbol} {args.qty}주 ({'시장가' if args.market == 'KRX' else f'지정가 {price}'})")
-    confirm = input("이 주문을 실제로 전송하시겠습니까? 'yes' 입력: ")
-    if confirm != "yes":
-        print("중단합니다.")
-        return
+    if args.virtual:
+        confirm = input("이 주문을 모의투자 서버로 전송하시겠습니까? 'yes' 입력: ")
+        if confirm != "yes":
+            print("중단합니다.")
+            return
+    else:
+        print("\n*** 실전 주문입니다. 실제 자금이 사용됩니다. ***")
+        confirm = input(f"정말로 실행하려면 정확히 '{args.side.upper()} {args.symbol} {args.qty}'를 그대로 입력하세요: ")
+        if confirm != f"{args.side.upper()} {args.symbol} {args.qty}":
+            print("입력이 일치하지 않아 중단합니다.")
+            return
 
     result = broker.place_order(args.symbol, side, args.qty, price=price, timestamp=datetime.now())
 

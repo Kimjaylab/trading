@@ -11,7 +11,8 @@
     python scripts/smoke_test_kis.py --market US            # 해외, 모의투자
     python scripts/smoke_test_kis.py --market KRX --no-virtual   # 실전 - 신중히
 
-.env 없이 매번 export/set으로 환경변수를 넣어도 동일하게 동작한다.
+모의투자 키와 실전 키가 실수로 섞이지 않도록, --env-file로 서로 다른 파일을 지정할 수
+있다 (예: .env.virtual, .env.real). 지정하지 않으면 기본값 .env를 읽는다.
 """
 from __future__ import annotations
 
@@ -29,7 +30,7 @@ from trading.brokers.kis_broker import KISBroker
 from trading.brokers.kis_overseas_broker import KISOverseasBroker
 from trading.brokers.kis_session import KISSession
 
-load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _step(name: str, fn) -> bool:
@@ -49,7 +50,11 @@ def main() -> None:
     parser.add_argument("--market", choices=["KRX", "US"], default="KRX")
     parser.add_argument("--virtual", action="store_true", default=True)
     parser.add_argument("--no-virtual", dest="virtual", action="store_false")
+    parser.add_argument("--env-file", default=".env", help="자격증명을 읽을 .env 파일 (기본: .env)")
     args = parser.parse_args()
+
+    load_dotenv(REPO_ROOT / args.env_file, override=True)
+    print(f"환경변수 파일: {args.env_file}")
 
     app_key = os.environ.get("KIS_APP_KEY")
     app_secret = os.environ.get("KIS_APP_SECRET")

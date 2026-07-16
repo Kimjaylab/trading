@@ -37,7 +37,7 @@ from trading.data.kis_provider import KISMarketDataProvider
 from trading.data.synthetic import SyntheticDataProvider
 from trading.execution.live_runner import LiveRunner
 
-load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def main() -> None:
@@ -55,9 +55,12 @@ def main() -> None:
         help="--market US --broker kis 일 때만 사용. 종목별 거래소 (예: AAPL:NASDAQ,IBM:NYSE). 미지정 종목은 NASDAQ.",
     )
     parser.add_argument("--poll-interval", type=int, default=60)
+    parser.add_argument("--env-file", default=".env", help="자격증명을 읽을 .env 파일 (모의/실전 키를 섞이지 않게 분리 가능)")
     args = parser.parse_args()
 
+    load_dotenv(REPO_ROOT / args.env_file, override=True)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    logging.info("환경변수 파일: %s", args.env_file)
 
     config = get_config(args.market)
 
@@ -98,6 +101,9 @@ def main() -> None:
 
         if not args.virtual:
             logging.warning("!!! 실전 도메인(--no-virtual)으로 실행합니다. 실제 자금이 사용됩니다 !!!")
+            confirm = input(f"실전 자동매매를 시작하려면 정확히 '실전 {args.market} 시작'을 입력하세요: ")
+            if confirm != f"실전 {args.market} 시작":
+                raise SystemExit("입력이 일치하지 않아 중단합니다.")
 
         # KIS 실계좌/모의계좌는 실제 예수금으로 RiskManager 기준 자산을 잡아야 한다.
         # --cash는 paper 브로커 전용 값이라 여기서는 쓰지 않는다.
