@@ -4,3 +4,4 @@ scikit-learn>=1.4
 PyYAML>=6.0
 pytest>=8.0
 requests>=2.31
+python-dotenv>=1.0

@@ -5,13 +5,13 @@
 계좌에 영향을 주지 않는 읽기 전용 호출만 수행한다. 실거래 루프(run_live.py)를
 돌리기 전에 자격증명/TR_ID/네트워크가 제대로 동작하는지 먼저 이걸로 확인할 것.
 
-사용법:
-    export KIS_APP_KEY=...
-    export KIS_APP_SECRET=...
-    export KIS_ACCOUNT_NO=...
+사용법 (repo 루트에 .env 파일을 만들어두면 자동으로 읽는다 - .env.example 참고):
+    cp .env.example .env   # 편집기로 .env를 열어 본인의 키/계좌번호를 채워넣는다
     python scripts/smoke_test_kis.py --market KRX          # 국내, 모의투자(기본값)
     python scripts/smoke_test_kis.py --market US            # 해외, 모의투자
     python scripts/smoke_test_kis.py --market KRX --no-virtual   # 실전 - 신중히
+
+.env 없이 매번 export/set으로 환경변수를 넣어도 동일하게 동작한다.
 """
 from __future__ import annotations
 
@@ -23,9 +23,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from dotenv import load_dotenv
+
 from trading.brokers.kis_broker import KISBroker
 from trading.brokers.kis_overseas_broker import KISOverseasBroker
 from trading.brokers.kis_session import KISSession
+
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 
 def _step(name: str, fn) -> bool:

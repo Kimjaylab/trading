@@ -7,6 +7,7 @@ KIS 모의투자 계좌를 연결해 충분히 검증한 뒤에만 --no-virtual(
 
 필요한 환경변수 (KIS 브로커 사용 시):
   KIS_APP_KEY, KIS_APP_SECRET, KIS_ACCOUNT_NO, (선택) KIS_ACCOUNT_PRODUCT_CODE
+repo 루트에 .env 파일(.env.example 참고)을 만들어두면 자동으로 읽는다 - 매번 export할 필요 없음.
 
 --market US로 --broker kis를 쓰면 KISOverseasBroker + KISOverseasMarketDataProvider가
 연결된다. 이 해외 경로는 국내(KRX) 경로보다 신뢰도가 더 낮다 - 특히 분봉 데이터가
@@ -24,6 +25,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from dotenv import load_dotenv
+
 from trading.brokers.kis_broker import KISBroker
 from trading.brokers.kis_overseas_broker import KISOverseasBroker
 from trading.brokers.kis_session import KISSession
@@ -33,6 +36,8 @@ from trading.data.kis_overseas_provider import KISOverseasMarketDataProvider
 from trading.data.kis_provider import KISMarketDataProvider
 from trading.data.synthetic import SyntheticDataProvider
 from trading.execution.live_runner import LiveRunner
+
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 
 def main() -> None:
