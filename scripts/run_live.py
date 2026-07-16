@@ -99,6 +99,12 @@ def main() -> None:
         if not args.virtual:
             logging.warning("!!! 실전 도메인(--no-virtual)으로 실행합니다. 실제 자금이 사용됩니다 !!!")
 
+        # KIS 실계좌/모의계좌는 실제 예수금으로 RiskManager 기준 자산을 잡아야 한다.
+        # --cash는 paper 브로커 전용 값이라 여기서는 쓰지 않는다.
+        real_cash = broker.get_cash_balance()
+        logging.info("계좌 조회 결과 예수금: %.0f", real_cash)
+        args.cash = real_cash
+
     runner = LiveRunner(provider, broker, initial_cash=args.cash, config=config, poll_interval_sec=args.poll_interval)
     runner.run_forever()
 

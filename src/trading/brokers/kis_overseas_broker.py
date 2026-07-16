@@ -21,6 +21,7 @@ TR_ID는 같은 계정(kimjaylab)의 `claude` 저장소 `claude/ai-trading-bot-k
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 
 import requests
@@ -28,6 +29,13 @@ import requests
 from trading.brokers.interfaces import BrokerClient, OrderResult, OrderSide, OrderStatus, Position
 from trading.brokers.kis_exchange_codes import DEFAULT_EXCHANGE, TRADING_EXCHANGE_CODES
 from trading.brokers.kis_session import KISAPIError, KISSession
+
+logger = logging.getLogger(__name__)
+
+# 실사용자 계좌로 확인한 결과(2026-07), inquire-balance 응답의 output2에는 이 후보들 중
+# 어느 것도 명확한 "외화 예수금 총액"으로 보이지 않았다 (P&L/매입금액 위주 필드만 존재).
+# 정확한 필드/엔드포인트를 찾을 때까지, 여기 없는 키는 0.0으로 안전하게 처리한다.
+_CASH_FIELD_CANDIDATES = ("frcr_dncl_amt1", "frcr_dncl_amt_2", "dncl_amt")
 
 TR_ID_BUY_REAL = "TTTT1002U"
 TR_ID_SELL_REAL = "TTTT1006U"
@@ -81,21 +89,10 @@ class KISOverseasBroker(BrokerClient):
             "CTX_AREA_NK200": "",
         }
 
-    # ---------- BrokerClient ----------
-    def get_cash_balance(self) -> float:
-        # TR_ID 확인 필요: 해외주식 예수금 조회
-        tr_id = "VTTS3012R" if self.use_virtual else "TTTS3012R"
-        resp = self.session.request(
-            "GET",
-            f"{self.domain}/uapi/overseas-stock/v1/trading/inquire-psamount",
-            headers=self.session.headers(tr_id),
-            params=self._balance_params(),
-        )
-        body = resp.json()
-        self._raise_if_error(body)
-        return float(body["output"]["frcr_dncl_amt1"])
-
-    def get_positions(self) -> dict[str, Position]:
+    def _fetch_balance(self) -> dict:
+        """해외주식 잔고조회(TTTS3012R/VTTS3012R). 실사용자 계좌로 호출 자체는 확인했으나
+        (rt_cd=0 응답 받음), output2에서 외화 예수금 총액에 해당하는 필드를 아직 특정하지
+        못했다 - get_cash_balance()는 이 응답에서 후보 필드를 찾고, 없으면 0.0을 반환한다."""
         tr_id = "VTTS3012R" if self.use_virtual else "TTTS3012R"
         resp = self.session.request(
             "GET",
@@ -105,6 +102,26 @@ class KISOverseasBroker(BrokerClient):
         )
         body = resp.json()
         self._raise_if_error(body)
+        return body
+
+    # ---------- BrokerClient ----------
+    def get_cash_balance(self) -> float:
+        body = self._fetch_balance()
+        output2 = body.get("output2", {})
+        if isinstance(output2, list):
+            output2 = output2[0] if output2 else {}
+        for key in _CASH_FIELD_CANDIDATES:
+            if key in output2:
+                return float(output2[key])
+        logger.warning(
+            "해외주식 예수금 필드를 응답에서 찾지 못했다 (후보: %s). 0.0을 반환한다 - "
+            "실제 예수금은 KIS 앱에서 직접 확인할 것. 응답 output2 키: %s",
+            _CASH_FIELD_CANDIDATES, list(output2.keys()),
+        )
+        return 0.0
+
+    def get_positions(self) -> dict[str, Position]:
+        body = self._fetch_balance()
 
         positions: dict[str, Position] = {}
         for row in body.get("output1", []):

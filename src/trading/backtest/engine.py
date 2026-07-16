@@ -80,6 +80,19 @@ class BacktestEngine:
 
         self._entry_context: dict[str, dict] = {}
 
+    def _portfolio_value(self, timestamp: datetime) -> float:
+        """현금 + 보유 포지션 평가액. PaperBroker는 자체 구현을 쓰고(빠름, API 호출 없음),
+        실거래 브로커(KISBroker 등)는 BrokerClient 인터페이스만 만족하면 되므로 여기서
+        get_cash_balance()/get_positions()를 조합해 계산한다."""
+        if hasattr(self.broker, "portfolio_value"):
+            return self.broker.portfolio_value(timestamp)
+
+        value = self.broker.get_cash_balance()
+        for symbol, pos in self.broker.get_positions().items():
+            snap = self.data_provider.get_snapshot(symbol, timestamp)
+            value += snap.last_close * pos.quantity
+        return value
+
     def _current_regime(self, timestamp: datetime) -> RegimeResult:
         if self.index_close is None:
             from trading.market_regime.classifier import Regime
@@ -119,8 +132,9 @@ class BacktestEngine:
         if not past_liquidation_cutoff:
             self._process_entries(ts, phase, regime, snapshots, features, result, excluded_counts)
 
-        self.risk_manager.update_equity(self.broker.portfolio_value(ts))
-        result.equity_curve.append((ts, self.broker.portfolio_value(ts)))
+        equity = self._portfolio_value(ts)
+        self.risk_manager.update_equity(equity)
+        result.equity_curve.append((ts, equity))
 
     def _process_exits(self, ts, snapshots, features, result: BacktestResult) -> None:
         for symbol, position in list(self.broker.get_positions().items()):

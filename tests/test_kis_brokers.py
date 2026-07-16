@@ -154,6 +154,51 @@ def test_domestic_get_positions_raises_clear_error_instead_of_silently_empty():
         broker.get_positions()
 
 
+def test_overseas_get_cash_balance_returns_zero_when_field_unavailable():
+    """실사용자 계좌(2026-07)에서 확인된 실제 응답 모양: output2에 예수금 필드가 없다."""
+    session, fake = _session()
+    url = f"{session.domain}/uapi/overseas-stock/v1/trading/inquire-balance"
+    fake.next_responses[url] = FakeResponse(
+        {
+            "rt_cd": "0",
+            "output1": [],
+            "output2": {"frcr_pchs_amt1": "0.00000", "tot_evlu_pfls_amt": "0.00000000"},
+        }
+    )
+    broker = KISOverseasBroker(session, account_no="12345678")
+
+    assert broker.get_cash_balance() == 0.0
+
+
+def test_overseas_get_cash_balance_uses_candidate_field_when_present():
+    session, fake = _session()
+    url = f"{session.domain}/uapi/overseas-stock/v1/trading/inquire-balance"
+    fake.next_responses[url] = FakeResponse(
+        {"rt_cd": "0", "output1": [], "output2": {"frcr_dncl_amt1": "1234.56"}}
+    )
+    broker = KISOverseasBroker(session, account_no="12345678")
+
+    assert broker.get_cash_balance() == 1234.56
+
+
+def test_overseas_get_positions_parses_output1():
+    session, fake = _session()
+    url = f"{session.domain}/uapi/overseas-stock/v1/trading/inquire-balance"
+    fake.next_responses[url] = FakeResponse(
+        {
+            "rt_cd": "0",
+            "output1": [{"ovrs_pdno": "AAPL", "ovrs_cblc_qty": "3", "pchs_avg_pric": "150.5"}],
+            "output2": {},
+        }
+    )
+    broker = KISOverseasBroker(session, account_no="12345678")
+
+    positions = broker.get_positions()
+
+    assert positions["AAPL"].quantity == 3
+    assert positions["AAPL"].avg_price == 150.5
+
+
 def test_overseas_place_order_requires_limit_price():
     session, _ = _session()
     broker = KISOverseasBroker(session, account_no="12345678")
