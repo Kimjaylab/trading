@@ -172,3 +172,11 @@ def test_trend_pullback_partial_and_full_take_profit():
     decision2 = strat.evaluate_exit(snap_full, feat, pos, minutes_held=21, partial_exit_done=True)
     assert decision2.reason == "full_take_profit"
     assert decision2.exit_fraction == 1.0
+
+
+def test_phase_selector_falls_back_for_unknown_strategy_name():
+    """브로커 재시작 등으로 내부 트래커를 잃은 '복구된' 포지션(strategy='recovered_from_broker'
+    같은 값)을 만나도 크래시하지 않고 안전한 기본 전략으로 대체해야 한다."""
+    selector = PhaseSelector(get_config())
+    strategy = selector.get("recovered_from_broker")
+    assert strategy.name == "trend_pullback"

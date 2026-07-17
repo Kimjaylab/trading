@@ -152,8 +152,20 @@ class BacktestEngine:
             # 덮어써도 결과가 같다.
             if "stop_price" in ctx:
                 position.stop_price = ctx["stop_price"]
+            elif position.stop_price <= 0:
+                # 내부 트래커에 없는(다른 프로세스 실행분/원래 보유 등) '복구된' 포지션 -
+                # 손절가가 0이면 절대 손절이 발동하지 않으므로, 평단가 기준 보수적 기본값을 부여한다.
+                fallback_cfg = self.config.strategies["trend_pullback"]
+                position.stop_price = position.avg_price * (1 - fallback_cfg["hard_stop_pct"] / 100)
+                logger.warning(
+                    "%s: 내부 트래커에 없는 포지션 발견 - 평단가(%.2f) 기준 임시 손절가(%.2f) 부여",
+                    symbol, position.avg_price, position.stop_price,
+                )
             if "target_price" in ctx:
                 position.target_price = ctx["target_price"]
+            elif position.target_price <= 0:
+                fallback_cfg = self.config.strategies["trend_pullback"]
+                position.target_price = position.avg_price * (1 + fallback_cfg["full_take_profit_pct"] / 100)
             partial_exit_done = ctx.get("partial_exit_done", False)
 
             strategy = self.phase_selector.get(position.strategy)

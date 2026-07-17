@@ -171,3 +171,30 @@ def test_stop_price_from_entry_context_overrides_broker_position():
     assert symbol not in fake_broker.get_positions()
     assert len(result.trades) == 1
     assert result.trades[0].exit_reason == "hard_stop_hit"
+
+
+def test_orphaned_position_gets_fallback_strategy_and_stop_instead_of_crashing():
+    """entry_context에도 없고 strategy명도 모르는(예: 'recovered_from_broker') 포지션을
+    만나도 크래시하지 않고, 평단가 기준 안전한 손절가를 부여해 관리할 수 있어야 한다."""
+    provider = SyntheticDataProvider(n_symbols=4, seed=13, bar_minutes=15)
+    ts = provider.get_session_timestamps()[2]
+    symbol = provider.get_universe(ts)[0]
+    snap = provider.get_snapshot(symbol, ts)
+    current_price = snap.last_close
+
+    entry_price = current_price / 0.80  # 현재가가 평단가 대비 -20%가 되도록 역산 (fallback -4% 손절보다 훨씬 아래)
+
+    fake_broker = _FakeRealBroker(cash=1_000_000)
+    fake_broker.positions[symbol] = Position(
+        symbol=symbol, quantity=5, avg_price=entry_price, opened_at=ts,
+        strategy="recovered_from_broker", stop_price=0.0, target_price=0.0,
+    )
+    engine = BacktestEngine(provider, initial_cash=1_000_000, config=get_config(), broker=fake_broker)
+    # 일부러 _entry_context를 비워둔다 - 완전히 낯선(복구된) 포지션 상황을 재현
+
+    result = BacktestResult(start_equity=1_000_000)
+    features = engine.feature_extractor.extract_batch({symbol: snap})
+
+    engine._process_exits(ts, {symbol: snap}, features, result)  # 예외가 나면 테스트 실패
+
+    assert symbol not in fake_broker.get_positions()  # 안전한 fallback 손절가에 걸려 청산됐어야 함
