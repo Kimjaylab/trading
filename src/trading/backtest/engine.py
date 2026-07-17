@@ -65,6 +65,7 @@ class BacktestEngine:
         config: Config | None = None,
         index_close: pd.Series | None = None,
         broker=None,
+        ignore_symbols: set[str] | None = None,
     ):
         self.data_provider = data_provider
         self.config = config or get_config()
@@ -75,6 +76,9 @@ class BacktestEngine:
         self.regime_classifier = MarketRegimeClassifier(self.config)
         self.phase_selector = PhaseSelector(self.config)
         self.index_close = index_close
+        # 이 시스템이 산 게 아닌 수동 보유종목 등, 아예 건드리면 안 되는 종목 목록.
+        # 신규 진입/청산 판단 양쪽에서 완전히 제외한다(자산 평가에는 그대로 포함됨).
+        self.ignore_symbols = ignore_symbols or set()
 
         # 자정을 넘기는 세션(미국장)도 올바르게 처리하기 위해 개장 시각 기준 경과분(elapsed
         # minutes)으로 비교한다 - 단순 ts.time() 비교는 자정 넘김 세션에서 깨진다.
@@ -141,6 +145,8 @@ class BacktestEngine:
 
     def _process_exits(self, ts, snapshots, features, result: BacktestResult) -> None:
         for symbol, position in list(self.broker.get_positions().items()):
+            if symbol in self.ignore_symbols:
+                continue
             snap = snapshots.get(symbol) or self.data_provider.get_snapshot(symbol, ts)
             feat = features.get(symbol) or self.feature_extractor.extract_single(snap)
             minutes_held = (ts - position.opened_at).total_seconds() / 60
@@ -228,7 +234,7 @@ class BacktestEngine:
         entered = 0
 
         for symbol, snap in snapshots.items():
-            if symbol in positions:
+            if symbol in positions or symbol in self.ignore_symbols:
                 continue
 
             excluded, reasons = is_excluded(snap, phase, self.config)

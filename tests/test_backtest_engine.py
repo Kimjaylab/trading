@@ -198,3 +198,30 @@ def test_orphaned_position_gets_fallback_strategy_and_stop_instead_of_crashing()
     engine._process_exits(ts, {symbol: snap}, features, result)  # 예외가 나면 테스트 실패
 
     assert symbol not in fake_broker.get_positions()  # 안전한 fallback 손절가에 걸려 청산됐어야 함
+
+
+def test_ignore_symbols_are_never_touched():
+    """사용자가 직접 매수한 종목처럼, 이 시스템이 절대 건드리면 안 되는 종목은
+    손절가가 0이라 극단적인 손실 상태여도 매도되지 않고 그대로 남아있어야 한다."""
+    provider = SyntheticDataProvider(n_symbols=4, seed=14, bar_minutes=15)
+    ts = provider.get_session_timestamps()[2]
+    symbol = provider.get_universe(ts)[0]
+    snap = provider.get_snapshot(symbol, ts)
+    current_price = snap.last_close
+    entry_price = current_price / 0.50  # 현재가가 평단가 대비 -50%가 되도록 극단적으로 역산
+
+    fake_broker = _FakeRealBroker(cash=1_000_000)
+    fake_broker.positions[symbol] = Position(
+        symbol=symbol, quantity=5, avg_price=entry_price, opened_at=ts,
+        strategy="recovered_from_broker", stop_price=0.0, target_price=0.0,
+    )
+    engine = BacktestEngine(
+        provider, initial_cash=1_000_000, config=get_config(), broker=fake_broker, ignore_symbols={symbol},
+    )
+
+    result = BacktestResult(start_equity=1_000_000)
+    features = engine.feature_extractor.extract_batch({symbol: snap})
+    engine._process_exits(ts, {symbol: snap}, features, result)
+
+    assert symbol in fake_broker.get_positions()  # 손실이 커도 건드리지 않아야 한다
+    assert len(result.trades) == 0

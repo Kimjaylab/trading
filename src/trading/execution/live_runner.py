@@ -33,9 +33,10 @@ class LiveRunner:
         initial_cash: float,
         config: Config | None = None,
         poll_interval_sec: int = 60,
+        ignore_symbols: set[str] | None = None,
     ):
         self.config = config or get_config()
-        self.engine = BacktestEngine(data_provider, initial_cash, self.config, broker=broker)
+        self.engine = BacktestEngine(data_provider, initial_cash, self.config, broker=broker, ignore_symbols=ignore_symbols)
         self.poll_interval_sec = poll_interval_sec
         self.result = BacktestResult(start_equity=initial_cash)
         self.excluded_counts: dict[str, int] = {}

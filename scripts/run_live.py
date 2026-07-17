@@ -65,6 +65,11 @@ def main() -> None:
         "--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING"],
         help="DEBUG로 하면 각 종목이 왜 제외/보류됐는지(점수, 사유)까지 매 주기마다 출력한다.",
     )
+    parser.add_argument(
+        "--ignore-symbols", type=str, default="",
+        help="쉼표로 구분한, 이 프로그램이 절대 매수/매도하지 않을 종목 (예: 본인이 수동으로 산 종목). "
+             "계좌에 이미 보유 중이어도 완전히 무시한다.",
+    )
     args = parser.parse_args()
 
     load_dotenv(REPO_ROOT / args.env_file, override=True)
@@ -72,6 +77,9 @@ def main() -> None:
     logging.info("환경변수 파일: %s / 로그레벨: %s", args.env_file, args.log_level)
 
     config = get_config(args.market)
+    ignore_symbols = {s.strip() for s in args.ignore_symbols.split(",") if s.strip()}
+    if ignore_symbols:
+        logging.info("관리 제외 종목(건드리지 않음): %s", ignore_symbols)
 
     if args.broker == "paper":
         provider = SyntheticDataProvider(n_symbols=24, market_open=config.market_open, market_close=config.market_close)
@@ -123,7 +131,10 @@ def main() -> None:
         logging.info("계좌 조회 결과 예수금: %.0f", real_cash)
         args.cash = real_cash
 
-    runner = LiveRunner(provider, broker, initial_cash=args.cash, config=config, poll_interval_sec=args.poll_interval)
+    runner = LiveRunner(
+        provider, broker, initial_cash=args.cash, config=config, poll_interval_sec=args.poll_interval,
+        ignore_symbols=ignore_symbols,
+    )
     runner.run_forever()
 
 
