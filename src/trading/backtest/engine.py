@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -22,6 +23,8 @@ from trading.strategies.selector import PhaseSelector
 from trading.utils.time_utils import minutes_between, minutes_since_open
 
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -210,6 +213,7 @@ class BacktestEngine:
     def _process_entries(self, ts, phase, regime, snapshots, features, result: BacktestResult, excluded_counts: dict) -> None:
         strategy = self.phase_selector.get(phase)
         positions = self.broker.get_positions()
+        entered = 0
 
         for symbol, snap in snapshots.items():
             if symbol in positions:
@@ -220,12 +224,16 @@ class BacktestEngine:
                 for r in reasons:
                     key = r.split(" (")[0].split(":")[0]
                     excluded_counts[key] = excluded_counts.get(key, 0) + 1
+                logger.debug("%s 제외(%s): %s", symbol, phase, reasons)
                 continue
 
             feat = features[symbol]
             score_result = self.scoring_engine.score(feat, phase)
             entry_decision = strategy.evaluate_entry(snap, feat, score_result, regime)
             if not entry_decision.should_enter:
+                logger.debug(
+                    "%s 진입보류(%s): score=%.3f reason=%s", symbol, phase, score_result.score, entry_decision.reason
+                )
                 continue
 
             can_enter, reject_reason = self.risk_manager.can_enter(
@@ -233,10 +241,12 @@ class BacktestEngine:
             )
             if not can_enter:
                 result.rejected_by_risk.append((ts, symbol, reject_reason))
+                logger.debug("%s 리스크거부(%s): %s", symbol, phase, reject_reason)
                 continue
 
             qty = self.risk_manager.position_size(self.broker.get_cash_balance(), snap.last_close)
             if qty <= 0:
+                logger.debug("%s 매수수량 0 (예산 부족 - 가격 %.2f)", symbol, snap.last_close)
                 continue
 
             order = self.broker.place_order(
@@ -255,6 +265,16 @@ class BacktestEngine:
                     "target_price": entry_decision.target_price,
                     "partial_exit_done": False,
                 }
+                entered += 1
+                logger.info(
+                    "%s 진입 체결: phase=%s qty=%d price=%.2f score=%.3f reason=%s",
+                    symbol, phase, qty, order.price, score_result.score, entry_decision.reason,
+                )
+            else:
+                logger.debug("%s 주문 거부/실패: %s", symbol, order.reason)
+
+        if entered == 0 and snapshots:
+            logger.info("이번 주기 신규 진입 없음 (스캔 %d종목, phase=%s) - DEBUG 로그 레벨에서 종목별 사유 확인 가능", len(snapshots), phase)
 
     def _liquidate_all(self, ts: datetime, result: BacktestResult) -> None:
         for symbol, position in list(self.broker.get_positions().items()):

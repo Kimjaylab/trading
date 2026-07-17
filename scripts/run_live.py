@@ -61,11 +61,15 @@ def main() -> None:
         help="--market US --broker kis 전용. 해외 예수금 API 필드를 찾지 못해 0으로 나올 때, "
              "KIS 앱에서 확인한 실제 USD 예수금을 직접 지정한다 (매수/매도마다 로컬에서 증감 추적).",
     )
+    parser.add_argument(
+        "--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING"],
+        help="DEBUG로 하면 각 종목이 왜 제외/보류됐는지(점수, 사유)까지 매 주기마다 출력한다.",
+    )
     args = parser.parse_args()
 
     load_dotenv(REPO_ROOT / args.env_file, override=True)
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    logging.info("환경변수 파일: %s", args.env_file)
+    logging.basicConfig(level=getattr(logging, args.log_level), format="%(asctime)s %(levelname)s %(message)s")
+    logging.info("환경변수 파일: %s / 로그레벨: %s", args.env_file, args.log_level)
 
     config = get_config(args.market)
 
