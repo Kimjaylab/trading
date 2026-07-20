@@ -157,5 +157,10 @@ class KISBroker(BrokerClient):
             )
 
         order_id = payload["output"]["ODNO"]
-        # 시장가 주문 직후 체결가는 별도 체결통보/조회 API로 확인해야 한다 (여기서는 미구현).
-        return OrderResult(symbol, side, quantity, price, OrderStatus.PENDING, order_id, timestamp, reason="fill_price_unconfirmed")
+        # 시장가 주문 직후 실제 체결가는 별도 체결통보/조회 API로 확인해야 하는데 아직
+        # 구현하지 않았다. 다만 engine.py(_process_entries/_execute_exit)는 OrderStatus.FILLED만
+        # 성공으로 인식해 리스크매니저/트레이드기록을 갱신하므로, 여기서 PENDING을 반환하면
+        # 실제로는 주문이 접수/체결됐어도 내부적으로 영원히 "실패"로 취급되어 손절/익절이
+        # 동작하지 않는 치명적 버그가 된다. 요청 시 넘긴 가격을 근사 체결가로 간주해 FILLED로
+        # 처리한다 - 시장가 주문이라 실제 체결가와 다를 수 있으니 추후 체결통보 API 연동 시 개선할 것.
+        return OrderResult(symbol, side, quantity, price, OrderStatus.FILLED, order_id, timestamp, reason="fill_price_unconfirmed")

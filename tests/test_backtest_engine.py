@@ -24,9 +24,14 @@ class _FakeRealBroker(BrokerClient):
 
     def place_order(self, symbol, side, quantity, price, timestamp, strategy="", stop_price=0.0, target_price=0.0):
         self._order_seq += 1
+        # KISOverseasBroker처럼 지정가가 필수인 실거래 브로커를 흉내낸다 - engine.py가
+        # 청산 주문에 price=0.0을 넘기면 실제로는 이 자리에서 조용히 거부됐었다(실사용자
+        # 계좌 버그). 이 가짜 브로커도 같은 조건으로 거부해야 그 회귀를 테스트로 잡을 수 있다.
+        if price <= 0:
+            return OrderResult(symbol, side, quantity, price, OrderStatus.REJECTED, "N/A", timestamp, reason="overseas_orders_require_limit_price")
         pos = self.positions.get(symbol)
         if side == OrderSide.SELL and pos is not None:
-            fill_price = pos.avg_price
+            fill_price = price
             realized_pnl = 0.0
             pos.quantity -= quantity
             if pos.quantity <= 0:

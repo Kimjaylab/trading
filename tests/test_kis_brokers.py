@@ -78,7 +78,9 @@ def test_domestic_place_order_uses_virtual_tr_id_and_market_order():
 
     result = broker.place_order("005930", OrderSide.BUY, 10, 70000, datetime.now())
 
-    assert result.status == OrderStatus.PENDING
+    # engine.py는 OrderStatus.FILLED만 성공으로 인식하므로(PENDING이면 체결/기록이 영원히
+    # 누락되는 버그가 된 적이 있다), 정상 응답(rt_cd=0) 시 반드시 FILLED여야 한다.
+    assert result.status == OrderStatus.FILLED
     order_call = next(c for c in fake.calls if "order-cash" in c["url"])
     assert order_call["headers"]["tr_id"] == "VTTC0802U"
     assert order_call["json"]["PDNO"] == "005930"
@@ -213,13 +215,16 @@ def test_overseas_place_order_uses_exchange_map_and_correct_tr_id():
     session, fake = _session(use_virtual=True)
     broker = KISOverseasBroker(session, account_no="12345678", exchange_map={"AAPL": "NASDAQ", "IBM": "NYSE"})
 
-    broker.place_order("IBM", OrderSide.BUY, 5, 150.0, datetime.now())
+    result = broker.place_order("IBM", OrderSide.BUY, 5, 150.0, datetime.now())
 
     order_call = next(c for c in fake.calls if "/overseas-stock/v1/trading/order" in c["url"])
     assert order_call["json"]["OVRS_EXCG_CD"] == "NYSE"
     assert order_call["json"]["OVRS_ORD_UNPR"] == "150.00"
     assert order_call["headers"]["tr_id"] == "VTTT1002U"
     assert any("/uapi/hashkey" in c["url"] for c in fake.calls)
+    # engine.py는 OrderStatus.FILLED만 성공으로 인식한다 (PENDING을 반환하면 실제로는
+    # 지정가 주문이 체결돼도 손절/익절이 영원히 반영되지 않는 버그가 된 적이 있다).
+    assert result.status == OrderStatus.FILLED
 
 
 def test_overseas_place_order_uses_real_tr_id_for_sell():

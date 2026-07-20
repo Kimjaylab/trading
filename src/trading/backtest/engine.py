@@ -184,10 +184,11 @@ class BacktestEngine:
                 decision.exit_fraction = 1.0
 
             if decision.should_exit:
-                self._execute_exit(ts, symbol, position, decision.reason, result, decision.exit_fraction)
+                self._execute_exit(ts, symbol, position, decision.reason, result, decision.exit_fraction, price=snap.bid_price)
 
     def _execute_exit(
-        self, ts, symbol, position: Position, reason: str, result: BacktestResult, exit_fraction: float = 1.0
+        self, ts, symbol, position: Position, reason: str, result: BacktestResult,
+        exit_fraction: float = 1.0, price: float = 0.0,
     ) -> None:
         original_qty = position.quantity
         if exit_fraction >= 1.0 or original_qty <= 1:
@@ -196,8 +197,16 @@ class BacktestEngine:
             sell_qty = min(max(1, round(original_qty * exit_fraction)), original_qty - 1)
         is_full_close = sell_qty >= original_qty
 
-        order = self.broker.place_order(symbol, OrderSide.SELL, sell_qty, 0.0, ts, strategy=position.strategy)
+        # price=0.0을 그대로 넘기면 지정가만 지원하는 브로커(KISOverseasBroker 등)가
+        # "지정가 필요" 사유로 조용히 주문을 거부한다 - 매도 시점의 매수호가(bid)를
+        # 지정가로 넣어 즉시 체결 가능하게 한다. PaperBroker/국내 시장가 브로커는 이 값을
+        # 무시하거나 참고용으로만 쓰므로 영향이 없다.
+        order = self.broker.place_order(symbol, OrderSide.SELL, sell_qty, price, ts, strategy=position.strategy)
         if order.status != OrderStatus.FILLED:
+            logger.warning(
+                "%s 청산 주문 실패(%s): status=%s reason=%s - 다음 주기에 재시도됨",
+                symbol, reason, order.status, order.reason,
+            )
             return
 
         if is_full_close:

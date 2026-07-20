@@ -208,4 +208,9 @@ class KISOverseasBroker(BrokerClient):
         else:
             self._estimated_cash = (self._estimated_cash or 0.0) + price * quantity
 
-        return OrderResult(symbol, side, quantity, price, OrderStatus.PENDING, order_id, timestamp, reason="fill_price_unconfirmed")
+        # engine.py는 OrderStatus.FILLED만 성공으로 인식해 리스크매니저/트레이드기록/예수금
+        # 추적을 갱신한다 - PENDING으로 반환하면 실제로는 지정가 주문이 접수/체결됐어도
+        # 내부적으로 계속 "실패"로 취급되어 손절/익절이 재시도만 반복되고 절대 반영되지 않는
+        # 치명적 버그가 된다(실사용자 계좌로 확인된 문제). 지정가 주문이라 요청 가격 그대로
+        # 체결됐다고 간주해도 시장가 주문보다 근사 오차가 작으므로 FILLED로 처리한다.
+        return OrderResult(symbol, side, quantity, price, OrderStatus.FILLED, order_id, timestamp, reason="fill_price_unconfirmed")
