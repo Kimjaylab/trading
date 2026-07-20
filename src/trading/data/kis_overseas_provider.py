@@ -42,10 +42,21 @@ def _first_present(row: dict, keys: list[str], default: float = 0.0) -> float:
 
 
 class KISOverseasMarketDataProvider(MarketDataProvider):
-    def __init__(self, session: KISSession, watchlist: list[str], exchange_map: dict[str, str] | None = None):
+    def __init__(
+        self,
+        session: KISSession,
+        watchlist: list[str],
+        exchange_map: dict[str, str] | None = None,
+        usd_krw_rate: float = 1450.0,
+    ):
+        # MarketSnapshot의 거래대금 필드는 이름 그대로 원화(KRW) 기준이어야 필터(filters/exclusion.py)의
+        # KRW 절대치 임계값과 비교가 맞는다. 해외주식은 원시 값이 USD라서 그대로 채우면 약 1300~1500배
+        # 작게 계산되어 사실상 모든 종목이 유동성 부족으로 걸린다 - 대략적인 환율로 KRW 환산해 채운다.
+        # 실시간 환율 조회 API는 아직 연동하지 않았으므로 근사치이며, --usd-krw-rate로 조정 가능하다.
         self.session = session
         self.watchlist = list(watchlist)
         self.exchange_map = exchange_map or {}
+        self.usd_krw_rate = usd_krw_rate
         self._minute_buffer: dict[str, pd.DataFrame] = {}
         self._daily_cache: dict[str, pd.DataFrame] = {}
         self._daily_cache_date: dict[str, str] = {}
@@ -76,8 +87,10 @@ class KISOverseasMarketDataProvider(MarketDataProvider):
         minute_bars = self._minute_buffer[symbol]
         daily_bars = self._fetch_daily_bars(symbol)
 
-        today_value = float((minute_bars["close"] * minute_bars["volume"]).sum())
-        avg20 = float(daily_bars["trading_value"].tail(20).mean()) if not daily_bars.empty else today_value
+        today_value_usd = float((minute_bars["close"] * minute_bars["volume"]).sum())
+        avg20_usd = float(daily_bars["trading_value"].tail(20).mean()) if not daily_bars.empty else today_value_usd
+        today_value = today_value_usd * self.usd_krw_rate
+        avg20 = avg20_usd * self.usd_krw_rate
 
         last_price = price_info["price"]
         spread_guess = max(last_price * 0.0005, 0.01)  # 해외는 호가창 조회 미구현 - 최소 스프레드로 근사

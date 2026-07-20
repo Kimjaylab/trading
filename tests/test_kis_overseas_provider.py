@@ -89,3 +89,24 @@ def test_neutral_defaults_for_unavailable_features():
     assert snapshot.vi_triggered is False
     assert snapshot.program_net_buy_krw == 0.0
     assert snapshot.execution_strength == 100.0
+
+
+def test_trading_value_is_converted_from_usd_to_krw():
+    """거래대금 필드는 이름이 '_krw'인데 원시 값은 USD라, 환율을 곱해 KRW로 환산해야
+    filters/exclusion.py의 원화 절대치 임계값과 올바르게 비교된다."""
+    fake = FakeHTTP()
+    session = KISSession(
+        "appkey", "appsecret", use_virtual=True, http=fake,
+        request_interval_sec=0.0, token_cache_path=tempfile.mktemp(suffix=".json"),
+    )
+    provider = KISOverseasMarketDataProvider(
+        session, watchlist=["AAPL"], exchange_map={"AAPL": "NASDAQ"}, usd_krw_rate=1500.0,
+    )
+    snapshot = provider.get_snapshot("AAPL", datetime.now())
+
+    # 일봉 최신 행: close=102.0, volume=600000 (USD 기준) -> KRW 환산은 환율을 곱한 값이어야 한다.
+    expected_avg20_krw = (102.0 * 600000 + 99.0 * 500000) / 2 * 1500.0
+    assert snapshot.avg_trading_value_20d_krw == expected_avg20_krw
+
+    # 당일 거래대금(분봉 누적)도 동일하게 환산되어야 한다: 첫 폴링 close=100, volume=1000(USD 기준).
+    assert snapshot.today_trading_value_krw == 100.0 * 1000.0 * 1500.0

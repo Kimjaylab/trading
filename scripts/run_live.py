@@ -62,6 +62,11 @@ def main() -> None:
              "KIS 앱에서 확인한 실제 USD 예수금을 직접 지정한다 (매수/매도마다 로컬에서 증감 추적).",
     )
     parser.add_argument(
+        "--usd-krw-rate", type=float, default=1450.0,
+        help="--market US --broker kis 전용. 거래대금(원화 기준 필터)을 USD에서 환산할 때 쓸 원/달러 환율 근사치. "
+             "KIS 앱/증권사 고시환율을 참고해 조정하면 유동성 필터가 더 정확해진다 (기본값 1450).",
+    )
+    parser.add_argument(
         "--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING"],
         help="DEBUG로 하면 각 종목이 왜 제외/보류됐는지(점수, 사유)까지 매 주기마다 출력한다.",
     )
@@ -113,7 +118,10 @@ def main() -> None:
             )
             if args.cash_override is not None:
                 logging.info("해외 예수금을 수동 지정값(%.2f USD)으로 사용합니다.", args.cash_override)
-            provider = KISOverseasMarketDataProvider(session, watchlist=watchlist, exchange_map=exchange_map)
+            provider = KISOverseasMarketDataProvider(
+                session, watchlist=watchlist, exchange_map=exchange_map, usd_krw_rate=args.usd_krw_rate,
+            )
+            logging.info("해외 거래대금 환산 환율: %.2f KRW/USD", args.usd_krw_rate)
             logging.warning(
                 "미국장 KIS 연동은 분봉 데이터가 없어 폴링 간격을 1개 봉으로 근사합니다 - "
                 "신뢰도가 국내(KRX) 경로보다 낮습니다."

@@ -32,9 +32,13 @@ def is_excluded(snapshot: MarketSnapshot, phase: str, config: Config | None = No
     if snapshot.spread_pct > cfg.get("max_spread_pct", 999):
         reasons.append(f"스프레드 과다 ({snapshot.spread_pct:.2f}%)")
 
-    depth_krw = (snapshot.bid_qty_top5 + snapshot.ask_qty_top5) * snapshot.last_close
-    if depth_krw < cfg.get("min_orderbook_depth_krw", 0):
-        reasons.append("호가 잔량 과소 (호가 얇음)")
+    # 호가 잔량이 둘 다 정확히 0이면 "실제로 얇다"가 아니라 "호가 데이터 자체가 없다"는
+    # 뜻이다(예: 해외주식은 호가창 조회를 아직 구현하지 않아 항상 0으로 채워진다).
+    # 이 경우 필터를 적용하면 모든 종목이 무조건 걸려버리므로, 데이터가 있을 때만 검사한다.
+    if snapshot.bid_qty_top5 > 0 or snapshot.ask_qty_top5 > 0:
+        depth_krw = (snapshot.bid_qty_top5 + snapshot.ask_qty_top5) * snapshot.last_close
+        if depth_krw < cfg.get("min_orderbook_depth_krw", 0):
+            reasons.append("호가 잔량 과소 (호가 얇음)")
 
     overheat_pct = (snapshot.last_close / snapshot.today_open - 1) * 100 if snapshot.today_open > 0 else 0
     if overheat_pct > cfg.get("max_overheat_return_pct", 999):
